@@ -1,7 +1,7 @@
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import { Telegraf, Input } from 'telegraf';
 import { Container, Singleton } from 'typescript-ioc';
-import type { ExtraReplyMessage } from 'telegraf/typings/telegram-types';
+import type { ExtraReplyMessage, ExtraEditMessageText } from 'telegraf/typings/telegram-types';
 import type { Context } from 'telegraf';
 
 import { LoggerService } from '@/services/app/logger.service';
@@ -63,14 +63,14 @@ export class TelegramBotService {
     }
   };
 
-  public editMessage = async (text: string, telegramId: string, messageId: number, options?: ExtraReplyMessage) => {
+  public editMessage = async (text: string, telegramId: string, messageId: number, options?: ExtraEditMessageText) => {
     try {
       return this.getBot().telegram.editMessageText(telegramId, messageId, undefined, text, {
         parse_mode: 'HTML',
         ...options,
       });
     } catch {
-      // Игнорируем: сообщение могло быть удалено или текст не изменился
+      this.loggerService.debug(this.TAG, 'Сообщение могло быть удалено или текст не изменился');
     }
   };
 
