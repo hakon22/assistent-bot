@@ -1,0 +1,173 @@
+# Assistent Bot
+
+Telegram-бот на TypeScript с мультиагентной архитектурой на основе LangGraph. Умеет искать вакансии на hh.ru, искать туры и отели через веб-скрапинг, отвечать на общие вопросы, распознавать голос и изображения.
+
+## Стек
+
+- **Runtime:** Node.js 25, TypeScript 5.9, ESM
+- **Telegram:** Telegraf 4.16
+- **LLM:** LangChain + LangGraph 1.2, совместим с OpenAI API
+- **БД:** PostgreSQL + TypeORM 0.3
+- **Браузер:** Playwright 1.44 (Chromium)
+- **Логи:** Winston + daily rotation
+
+## Быстрый старт
+
+```bash
+# Установить зависимости
+make install
+
+# Запустить локально (режим polling)
+make start-local
+```
+
+## Переменные окружения
+
+Создай `.env` в корне проекта:
+
+```env
+# Telegram
+TELEGRAM_BOT_TOKEN=          # токен бота от @BotFather
+TELEGRAM_CHAT_ID=            # telegram_id первого пользователя (доступ к боту)
+TELEGRAM_CHAT_ID2=           # telegram_id второго пользователя
+
+# LLM (OpenAI-совместимый endpoint)
+LLM_BASE_URL=                # например https://routerai.ru/api/v1
+LLM_API_KEY=                 # ключ API
+LLM_MODEL_NAME=              # модель по умолчанию (google/gemini-3.1-flash-lite-preview)
+LLM_TEMPERATURE=0.7          # температура (0–1)
+
+# База данных
+DB=LOCAL                     # LOCAL или HOST
+DB_LOCAL=assistent_bot       # имя локальной БД
+USER_DB_LOCAL=postgres        # пользователь локальной БД
+PASSWORD_DB_LOCAL=            # пароль локальной БД
+DB_HOST=assistent_bot        # имя БД на сервере
+USER_DB_HOST=                # пользователь БД на сервере
+PASSWORD_DB_HOST=            # пароль БД на сервере
+
+# Яндекс
+YANDEX_SEARCH_API_KEY=       # ключ Yandex Search API
+YANDEX_SEARCH_FOLDER_ID=     # folder_id в Yandex Cloud
+YANDEX_VOICE_API_KEY=        # ключ Yandex SpeechKit (STT)
+
+# Прокси (опционально, SOCKS5)
+PROXY_HOST=                  # host:port
+PROXY_USER=
+PROXY_PASS=
+
+# Прочее
+PORT=3014
+NODE_ENV=development
+```
+
+## Миграции
+
+```bash
+# Применить миграции (dev)
+npm run migration:run
+
+# Применить миграции (prod)
+npm run migration:run:prod
+
+# Откатить последнюю миграцию
+npm run migration:revert
+
+# Создать новую миграцию
+npm run migration:create:name -- --name=МоёИзменение
+```
+
+## Docker
+
+### Разработка
+
+```bash
+docker-compose -f docker-compose.dev.yml up
+```
+
+### Продакшн
+
+```bash
+docker-compose -f docker-compose.prod.yml up
+```
+
+Продакшн-compose автоматически запускает миграции перед стартом бота.
+
+## Структура проекта
+
+```
+src/
+├── bot.ts                          # точка входа
+├── db/
+│   ├── entities/                   # TypeORM сущности
+│   ├── migrations/                 # миграции БД
+│   └── database.service.ts
+├── services/
+│   ├── agents/
+│   │   ├── manager.agent.ts        # роутер запросов
+│   │   ├── general.agent.ts        # общие вопросы
+│   │   ├── job-search.agent.ts     # поиск работы (hh.ru)
+│   │   └── tours-hotels.agent.ts   # поиск туров и отелей
+│   ├── telegram/
+│   │   ├── telegram-bot.service.ts
+│   │   ├── telegram-bot-command.service.ts
+│   │   └── telegram.service.ts
+│   ├── tools/
+│   │   ├── playwright.tool.ts      # браузерный скрапинг
+│   │   ├── yandex-search.tool.ts   # Yandex Search API
+│   │   ├── yandex-stt.tool.ts      # распознавание речи
+│   │   └── hh-api.tool.ts          # HeadHunter API
+│   ├── model/
+│   │   └── model.service.ts        # управление LLM
+│   ├── search/
+│   │   └── search-cache.service.ts # кэш поисковых запросов
+│   └── error/
+│       └── error-log.service.ts
+└── routes/
+    ├── health/                     # GET /health
+    └── integration/                # интеграционные эндпоинты
+```
+
+## Схема БД
+
+PostgreSQL, схема `assistent_bot`:
+
+| Таблица | Назначение |
+|---|---|
+| `user` | Пользователи бота |
+| `model` | Доступные LLM-модели и цены |
+| `request` | Запросы пользователей |
+| `request_status` | Статусы запросов |
+| `conversation_history` | История диалогов |
+| `file_attachment` | Загруженные файлы |
+| `job_vacancy` | Вакансии с hh.ru |
+| `search_history` | История поиска |
+| `search_cache` | Кэш поисковых запросов (TTL 6ч) |
+| `agent_delegation_log` | Лог маршрутизации агентов |
+| `web_research_log` | Лог веб-исследований |
+| `error_log` | Ошибки приложения |
+| `telegram_dialog_state` | Состояние диалога пользователя |
+
+## Агенты
+
+Менеджер-агент (`manager.agent.ts`) анализирует сообщение и маршрутизирует его к нужному агенту:
+
+| Агент | Триггеры |
+|---|---|
+| `job_search_agent` | работа, вакансия, резюме, зарплата, hh.ru |
+| `tours_hotels_agent` | тур, отель, купить, цена, найди на сайте |
+| `general_agent` | всё остальное |
+
+## Команды бота
+
+| Команда | Описание |
+|---|---|
+| `/start` | Запуск бота |
+| `/model` | Выбрать LLM-модель для общения |
+| `/resume` | Загрузить резюме (PDF или ссылка) |
+| `/stop` | Остановить текущий поиск |
+| `/help` | Помощь |
+
+## Доступ
+
+Бот работает только для пользователей, перечисленных в `TELEGRAM_CHAT_ID` и `TELEGRAM_CHAT_ID2`. Все остальные получают отказ.

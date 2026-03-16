@@ -1,0 +1,109 @@
+import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn, BaseEntity } from 'typeorm';
+
+export type UserRole = 'user' | 'admin' | 'operator';
+export type UserStatus = 'active' | 'banned' | 'inactive';
+
+/** Пользователь Telegram-бота */
+@Entity({
+  name: 'user',
+})
+export class UserEntity extends BaseEntity {
+  /** Уникальный идентификатор пользователя */
+  @PrimaryGeneratedColumn()
+  public id: number;
+
+  /** Дата создания записи */
+  @CreateDateColumn({
+    name: 'created_at',
+    type: 'timestamp with time zone',
+  })
+  public createdAt: Date;
+
+  /** Дата последнего изменения записи */
+  @UpdateDateColumn({
+    name: 'updated_at',
+    type: 'timestamp with time zone',
+  })
+  public updatedAt: Date;
+
+  /** Telegram id пользователя (обязателен, уникален) */
+  @Column('bigint', {
+    name: 'telegram_id',
+    unique: true,
+  })
+  public telegramId: string;
+
+  /** Username пользователя в Telegram */
+  @Column('character varying', {
+    nullable: true,
+  })
+  public username: string | null;
+
+  /** Отображаемое имя пользователя */
+  @Column('character varying', {
+    name: 'display_name',
+    nullable: true,
+  })
+  public displayName: string | null;
+
+  /** Имя пользователя */
+  @Column('character varying', {
+    name: 'first_name',
+    nullable: true,
+  })
+  public firstName: string | null;
+
+  /** Фамилия пользователя */
+  @Column('character varying', {
+    name: 'last_name',
+    nullable: true,
+  })
+  public lastName: string | null;
+
+  /** Роль пользователя (user / admin / operator) */
+  @Column('character varying', {
+    default: 'user',
+  })
+  public role: UserRole;
+
+  /** Статус пользователя (active / banned / inactive) */
+  @Column('character varying', {
+    default: 'active',
+  })
+  public status: UserStatus;
+
+  /** Текст резюме пользователя */
+  @Column('text', {
+    name: 'resume_text',
+    nullable: true,
+  })
+  public resumeText: string | null;
+
+  /** Telegram file_id загруженного резюме */
+  @Column('character varying', {
+    name: 'resume_file_id',
+    nullable: true,
+  })
+  public resumeFileId: string | null;
+
+  /** Дополнительные произвольные данные пользователя */
+  @Column('jsonb', {
+    name: 'extra_data',
+    default: '{}',
+  })
+  public extraData: Record<string, any>;
+
+  /** ID выбранной пользователем модели (null = модель по умолчанию из env) */
+  @Column('character varying', {
+    name: 'model_id',
+    nullable: true,
+  })
+  public modelId: string | null;
+
+  /** Дата последней активности пользователя */
+  @Column('timestamp with time zone', {
+    name: 'last_seen_at',
+    nullable: true,
+  })
+  public lastSeenAt: Date | null;
+}

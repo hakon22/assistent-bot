@@ -1,0 +1,26 @@
+services:
+  migrations:
+    image: ${DOCKER_USERNAME}/assistent-bot:latest
+    network_mode: "host"
+    env_file: .env
+    volumes:
+      - /srv/logs:/srv/logs
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    restart: "no"
+    command: migration:run:prod
+
+  bot:
+    image: ${DOCKER_USERNAME}/assistent-bot:latest
+    network_mode: "host"
+    env_file: .env
+    ports:
+      - "3014:3014"
+    volumes:
+      - /srv/logs:/srv/logs
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    restart: unless-stopped
+    command: start:bot:prod
+    depends_on:
+      - migrations

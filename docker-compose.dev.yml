@@ -1,0 +1,14 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: assistent-bot-dev:latest
+    env_file: .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "3014:3014"
+    volumes:
+      - "C:/srv/logs:/srv/logs"
+    command: start:bot:docker:dev
