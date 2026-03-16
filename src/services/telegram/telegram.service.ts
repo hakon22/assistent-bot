@@ -1,5 +1,5 @@
 import { Container, Singleton } from 'typescript-ioc';
-import type { ExtraReplyMessage } from 'telegraf/typings/telegram-types';
+import type { ExtraReplyMessage, ExtraEditMessageText } from 'telegraf/typings/telegram-types';
 import type { Request, Response } from 'express';
 
 import { UserEntity } from '@/db/entities/user.entity';
@@ -54,7 +54,7 @@ export class TelegramService {
     }
   };
 
-  public editMessage = async (message: string | string[], telegramId: string, messageId: number, options?: ExtraReplyMessage) => {
+  public editMessage = async (message: string | string[], telegramId: string, messageId: number, options?: ExtraEditMessageText) => {
     const text = this.serializeText(message);
     return this.telegramBotService.editMessage(text, telegramId, messageId, options);
   };
