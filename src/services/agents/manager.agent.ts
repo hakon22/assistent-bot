@@ -4,14 +4,18 @@ import { Annotation } from '@langchain/langgraph';
 import { SystemMessage, HumanMessage } from '@langchain/core/messages';
 
 import { ModelService } from '@/services/model/model.service';
+import { LoggerService } from '@/services/app/logger.service';
 import { GeneralAgentService } from '@/services/agents/general.agent';
 import { JobSearchAgentService } from '@/services/agents/job-search.agent';
 import { ToursHotelsAgentService } from '@/services/agents/tours-hotels.agent';
+import { ReminderAgentService } from '@/services/agents/reminder.agent';
 import { AgentDelegationLogEntity } from '@/db/entities/agent-delegation-log.entity';
+import { RequestEntity } from '@/db/entities/request.entity';
 import { RequestService } from '@/services/request/request.service';
 import { ConversationHistoryEntity } from '@/db/entities/conversation-history.entity';
+import { TelegramDialogStateEntity, TelegramDialogStateEnum } from '@/db/entities/telegram-dialog-state.entity';
 
-type AgentName = 'job_search_agent' | 'tours_hotels_agent' | 'general_agent';
+type AgentName = 'job_search_agent' | 'tours_hotels_agent' | 'general_agent' | 'reminder_agent';
 
 const AGENTS_REGISTRY: { name: AgentName; description: string; }[] = [
   {
@@ -25,6 +29,10 @@ const AGENTS_REGISTRY: { name: AgentName; description: string; }[] = [
   {
     name: 'general_agent',
     description: 'Используй для всех остальных запросов. Отвечает на общие вопросы, ведёт беседу, объясняет понятия, даёт советы. Используй как fallback по умолчанию.',
+  },
+  {
+    name: 'reminder_agent',
+    description: 'Используй когда пользователь хочет поставить напоминание — себе или партнёру. Ключевые слова: напомни, напоминание, не забудь, напомни зайчику, напомни жене, напомни мужу, поставь напоминание, через X минут, через X часов, таймер, в X часов напомни.',
   },
 ];
 
@@ -71,6 +79,12 @@ export interface ManagerResult {
 export class ManagerAgentService {
   private readonly TAG = 'ManagerAgentService';
 
+  private readonly REMINDER_PATTERN = /^(?:напомни\b|поставь напоминание|не забудь|через \d+\s*(?:секунд|минут|минуты|минуту|час|часа|часов))/i;
+
+  private readonly MEDIA_PREFIX_PATTERN = /^\[(?:Голосовое|Видеосообщение|Видео|Аудио)\]:\s*/i;
+
+  private readonly loggerService = Container.get(LoggerService);
+
   private readonly modelService = Container.get(ModelService);
 
   private readonly generalAgentService = Container.get(GeneralAgentService);
@@ -78,6 +92,8 @@ export class ManagerAgentService {
   private readonly jobSearchAgentService = Container.get(JobSearchAgentService);
 
   private readonly toursHotelsAgentService = Container.get(ToursHotelsAgentService);
+
+  private readonly reminderAgentService = Container.get(ReminderAgentService);
 
   private readonly requestService = Container.get(RequestService);
 
@@ -105,7 +121,7 @@ export class ManagerAgentService {
       '{"agent_name": "<имя агента>", "reason": "<краткое объяснение>", "user_acknowledgment": "<статус обработки>"}',
     ].join('\n');
 
-    let userContent = state.messageText;
+    let userContent = state.messageText.replace(/^\[(?:Голосовое|Видеосообщение|Видео|Аудио)\]:\s*/i, '');
     if (state.fileText?.trim()) {
       userContent += `\n\n[Файл]: ${state.fileText.substring(0, 500)}`;
     }
@@ -132,7 +148,7 @@ export class ManagerAgentService {
         }
       }
     } catch (error) {
-      console.error(`[${this.TAG}] Router LLM error:`, error);
+      this.loggerService.error(this.TAG, 'Router LLM error', error);
     }
 
     await this.logDelegation(state.requestId, selectedAgent, routingReason, llmReasoning);
@@ -158,7 +174,7 @@ export class ManagerAgentService {
       });
       return { response: result.responseText, inlineKeyboard: result.inlineKeyboard ?? null };
     } catch (error) {
-      console.error(`[${this.TAG}] JobSearchAgent error:`, error);
+      this.loggerService.error(this.TAG, 'JobSearchAgent error', error);
       return { response: 'Произошла ошибка при поиске вакансий. Попробуйте позже.' };
     }
   };
@@ -174,7 +190,7 @@ export class ManagerAgentService {
       });
       return { response };
     } catch (error) {
-      console.error(`[${this.TAG}] ToursHotelsAgent error:`, error);
+      this.loggerService.error(this.TAG, 'ToursHotelsAgent error', error);
       return { response: 'Произошла ошибка при поиске. Попробуйте позже.' };
     }
   };
@@ -193,14 +209,97 @@ export class ManagerAgentService {
       });
       return { response };
     } catch (error) {
-      console.error(`[${this.TAG}] GeneralAgent error:`, error);
+      this.loggerService.error(this.TAG, 'GeneralAgent error', error);
       throw error;
     }
+  };
+
+  private reminderNode = async (state: AgentState): Promise<Partial<AgentState>> => {
+    try {
+      const result = await this.reminderAgentService.process({
+        telegramId: state.telegramId,
+        userId: state.userId,
+        requestId: state.requestId,
+        messageText: state.messageText,
+        modelId: state.modelId,
+      });
+      return { response: result.responseText, inlineKeyboard: result.inlineKeyboard ?? null };
+    } catch (error) {
+      this.loggerService.error(this.TAG, 'ReminderAgent error', error);
+      return { response: 'Произошла ошибка при создании напоминания. Попробуй позже.' };
+    }
+  };
+
+  private buildGraph = () => {
+    const graph = new StateGraph(AgentStateAnnotation)
+      .addNode('router', this.routerNode)
+      .addNode('job_search_agent', this.jobSearchNode)
+      .addNode('tours_hotels_agent', this.toursHotelsNode)
+      .addNode('general_agent', this.generalNode)
+      .addNode('reminder_agent', this.reminderNode)
+      .addEdge('__start__', 'router')
+      .addConditionalEdges(
+        'router',
+        (state: AgentState) => state.selectedAgent ?? 'general_agent',
+        {
+          job_search_agent: 'job_search_agent',
+          tours_hotels_agent: 'tours_hotels_agent',
+          general_agent: 'general_agent',
+          reminder_agent: 'reminder_agent',
+        },
+      )
+      .addEdge('job_search_agent', END)
+      .addEdge('tours_hotels_agent', END)
+      .addEdge('general_agent', END)
+      .addEdge('reminder_agent', END);
+
+    return graph.compile();
   };
 
   private readonly graph = this.buildGraph();
 
   public process = async (input: ManagerInput): Promise<ManagerResult> => {
+    const dialogState = await TelegramDialogStateEntity.findOne({
+      where: { telegramId: input.telegramId },
+    });
+
+    const cleanMessageText = input.messageText.replace(this.MEDIA_PREFIX_PATTERN, '');
+    const isExplicitReminderRequest = this.REMINDER_PATTERN.test(cleanMessageText);
+
+    // EDIT_WAITING всегда имеет приоритет: пользователь вводит новый текст напоминания
+    const isEditWaiting = dialogState?.state === TelegramDialogStateEnum.REMINDER_EDIT_WAITING;
+
+    // CLARIFICATION_WAITING перехватывается только если пользователь НЕ начинает новый запрос явно
+    const isClarificationWaiting = dialogState?.state === TelegramDialogStateEnum.REMINDER_CLARIFICATION_WAITING;
+    const shouldInterceptForReminder = isEditWaiting || (isClarificationWaiting && !isExplicitReminderRequest);
+
+    if (shouldInterceptForReminder) {
+      await this.requestService.markProcessing(input.requestId);
+      const result = await this.reminderAgentService.process({
+        telegramId: input.telegramId,
+        userId: input.userId,
+        requestId: input.requestId,
+        messageText: input.messageText,
+        modelId: input.modelId,
+      });
+      await this.requestService.markCompleted(input.requestId, 'reminder_agent', result.responseText);
+      return { responseText: result.responseText, agentName: 'reminder_agent', inlineKeyboard: result.inlineKeyboard ?? null };
+    }
+
+    if (isExplicitReminderRequest) {
+      this.loggerService.info(this.TAG, 'Детерминированный роутинг → reminder_agent', { messageText: cleanMessageText });
+      await this.requestService.markProcessing(input.requestId);
+      const result = await this.reminderAgentService.process({
+        telegramId: input.telegramId,
+        userId: input.userId,
+        requestId: input.requestId,
+        messageText: input.messageText,
+        modelId: input.modelId,
+      });
+      await this.requestService.markCompleted(input.requestId, 'reminder_agent', result.responseText);
+      return { responseText: result.responseText, agentName: 'reminder_agent', inlineKeyboard: result.inlineKeyboard ?? null };
+    }
+
     const history = await this.loadHistory(input.userId);
 
     await this.requestService.markProcessing(input.requestId);
@@ -231,33 +330,10 @@ export class ManagerAgentService {
     return { responseText, agentName, inlineKeyboard: result.inlineKeyboard ?? null };
   };
 
-  private buildGraph() {
-    const graph = new StateGraph(AgentStateAnnotation)
-      .addNode('router', this.routerNode)
-      .addNode('job_search_agent', this.jobSearchNode)
-      .addNode('tours_hotels_agent', this.toursHotelsNode)
-      .addNode('general_agent', this.generalNode)
-      .addEdge('__start__', 'router')
-      .addConditionalEdges(
-        'router',
-        (state: AgentState) => state.selectedAgent ?? 'general_agent',
-        {
-          job_search_agent: 'job_search_agent',
-          tours_hotels_agent: 'tours_hotels_agent',
-          general_agent: 'general_agent',
-        },
-      )
-      .addEdge('job_search_agent', END)
-      .addEdge('tours_hotels_agent', END)
-      .addEdge('general_agent', END);
-
-    return graph.compile();
-  }
-
   private logDelegation = async (requestId: number, toAgent: string, reason: string, llmReasoning: string): Promise<void> => {
     try {
       const delegationLog = new AgentDelegationLogEntity();
-      delegationLog.requestId = requestId;
+      delegationLog.request = { id: requestId } as RequestEntity;
       delegationLog.fromAgent = 'manager';
       delegationLog.toAgent = toAgent;
       delegationLog.reason = reason;
@@ -269,8 +345,8 @@ export class ManagerAgentService {
   private loadHistory = async (userId: number): Promise<{ role: string; content: string; }[]> => {
     try {
       const history = await ConversationHistoryEntity.find({
-        where: { userId },
-        order: { createdAt: 'DESC' },
+        where: { user: { id: userId } },
+        order: { created: 'DESC' },
         take: 10,
       });
       return [...history].reverse().map((historyItem) => ({ role: historyItem.role, content: historyItem.content }));

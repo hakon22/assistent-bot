@@ -1,4 +1,6 @@
-import { BaseEntity, Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
+import { BaseEntity, Column, CreateDateColumn, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
+
+import { UserEntity } from '@/db/entities/user.entity';
 
 export enum TelegramDialogStateEnum {
   /** Состояние ожидания */
@@ -7,6 +9,12 @@ export enum TelegramDialogStateEnum {
   PROFILE_WAIT_RESUME = 'PROFILE_WAIT_RESUME',
   /** Ожидание уточнения от пользователя */
   USER_CLARIFICATION_WAITING = 'USER_CLARIFICATION_WAITING',
+  /** Ожидание уточнения времени для напоминания */
+  REMINDER_CLARIFICATION_WAITING = 'REMINDER_CLARIFICATION_WAITING',
+  /** Ожидание нового значения при редактировании напоминания */
+  REMINDER_EDIT_WAITING = 'REMINDER_EDIT_WAITING',
+  /** Ожидание подтверждения изменения напоминания */
+  REMINDER_EDIT_CONFIRM_WAITING = 'REMINDER_EDIT_CONFIRM_WAITING',
 }
 
 /** Текущее состояние диалога пользователя в Telegram */
@@ -31,6 +39,16 @@ export class TelegramDialogStateEntity extends BaseEntity {
     nullable: false,
   })
   public updated: Date;
+
+  /** Пользователь, которому принадлежит состояние диалога */
+  @ManyToOne(() => UserEntity, {
+    nullable: true,
+    onDelete: 'CASCADE',
+  })
+  @JoinColumn({
+    name: 'user_id',
+  })
+  public user: UserEntity | null;
 
   /** Telegram id пользователя (уникален — одна запись на пользователя) */
   @Column('character varying', {

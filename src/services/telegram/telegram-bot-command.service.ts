@@ -5,21 +5,25 @@ import { type Telegraf, type Context } from 'telegraf';
 
 import { TelegramBotService } from '@/services/telegram/telegram-bot.service';
 import { TelegramService } from '@/services/telegram/telegram.service';
-import { UserEntity } from '@/db/entities/user.entity';
+import { UserEntity, UserRoleEnum, UserStatusEnum } from '@/db/entities/user.entity';
 import { TelegramDialogStateEntity, TelegramDialogStateEnum } from '@/db/entities/telegram-dialog-state.entity';
 import { ModelEntity } from '@/db/entities/model.entity';
 import { ManagerAgentService } from '@/services/agents/manager.agent';
 import { JobSearchAgentService } from '@/services/agents/job-search.agent';
+import { ReminderAgentService } from '@/services/agents/reminder.agent';
 import { RequestService } from '@/services/request/request.service';
 import { ErrorLogService } from '@/services/error/error-log.service';
 import { YandexSttTool } from '@/services/tools/yandex-stt.tool';
 import { PlaywrightTool } from '@/services/tools/playwright.tool';
 import { BaseService } from '@/services/app/base.service';
+import { ReminderEntity, ReminderStatusEnum } from '@/db/entities/reminder.entity';
+import type { MediaType } from '@/db/entities/request.entity';
 
 const ACKNOWLEDGEMENTS: Record<string, string> = {
   job_search_agent: 'Ищу подходящие вакансии',
   tours_hotels_agent: 'Ищу в интернете',
   general_agent: 'Обрабатываю запрос',
+  reminder_agent: 'Обрабатываю напоминание',
 };
 
 const DOTS = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -35,6 +39,8 @@ export class TelegramBotCommandService extends BaseService {
   private readonly managerAgentService = Container.get(ManagerAgentService);
 
   private readonly jobSearchAgentService = Container.get(JobSearchAgentService);
+
+  private readonly reminderAgentService = Container.get(ReminderAgentService);
 
   private readonly requestService = Container.get(RequestService);
 
@@ -60,8 +66,8 @@ export class TelegramBotCommandService extends BaseService {
           return;
         }
         await this.telegramService.start(user.telegramId);
-      } catch (err) {
-        await this.sendErrorToUser(ctx.from?.id?.toString(), err);
+      } catch (error) {
+        await this.sendErrorToUser(ctx.from?.id?.toString(), error);
       }
     });
 
@@ -82,8 +88,8 @@ export class TelegramBotCommandService extends BaseService {
           ],
           user.telegramId,
         );
-      } catch (err) {
-        await this.sendErrorToUser(ctx.from?.id?.toString(), err);
+      } catch (error) {
+        await this.sendErrorToUser(ctx.from?.id?.toString(), error);
       }
     });
 
@@ -95,8 +101,22 @@ export class TelegramBotCommandService extends BaseService {
           return;
         }
         await this.sendModelPicker(user);
-      } catch (err) {
-        await this.sendErrorToUser(ctx.from?.id?.toString(), err);
+      } catch (error) {
+        await this.sendErrorToUser(ctx.from?.id?.toString(), error);
+      }
+    });
+
+    // /reminders
+    bot.command('reminders', async (ctx) => {
+      try {
+        const user = await this.ensureUser(ctx);
+        if (!this.isAllowed(user)) {
+          return;
+        }
+        const result = await this.reminderAgentService.buildRemindersList(user.id, user.telegramId);
+        await this.sendResult(user.telegramId, result.responseText, result.inlineKeyboard ?? null);
+      } catch (error) {
+        await this.sendErrorToUser(ctx.from?.id?.toString(), error);
       }
     });
 
@@ -128,12 +148,13 @@ export class TelegramBotCommandService extends BaseService {
             '• «Найди туры в Турцию в июне» — поищу в интернете.',
             '• /resume — загрузить резюме для умного подбора вакансий.',
             '• /model — выбрать модель ИИ для общения.',
+            '• /reminders — управлять напоминаниями.',
             '• /stop — остановить текущий поиск.',
           ],
           user.telegramId,
         );
-      } catch (err) {
-        await this.sendErrorToUser(ctx.from?.id?.toString(), err);
+      } catch (error) {
+        await this.sendErrorToUser(ctx.from?.id?.toString(), error);
       }
     });
 
@@ -150,6 +171,10 @@ export class TelegramBotCommandService extends BaseService {
 
         const state = await this.getOrCreateState(telegramId!);
         const text = ctx.message.text ?? '';
+
+        if (text.startsWith('/')) {
+          return;
+        }
 
         if (state.state === TelegramDialogStateEnum.PROFILE_WAIT_RESUME) {
           const urlMatch = text.match(/https?:\/\/[^\s]+/);
@@ -184,8 +209,8 @@ export class TelegramBotCommandService extends BaseService {
         }
 
         await this.processTextMessage(user, text, 'text');
-      } catch (err) {
-        await this.handleError(err, { telegramId, serviceName: this.TAG, nodeName: 'text_handler' });
+      } catch (error) {
+        await this.handleError(error, { telegramId, serviceName: this.TAG, nodeName: 'text_handler' });
       }
     });
 
@@ -239,8 +264,8 @@ export class TelegramBotCommandService extends BaseService {
         }
 
         await this.processFileMessage(user, caption || `Файл: ${fileName}`, fileText, downloadUrl, document.file_id, 'document', mimeType, fileName, buffer.length);
-      } catch (err) {
-        await this.handleError(err, { telegramId, serviceName: this.TAG, nodeName: 'document_handler' });
+      } catch (error) {
+        await this.handleError(error, { telegramId, serviceName: this.TAG, nodeName: 'document_handler' });
       }
     });
 
@@ -275,8 +300,8 @@ export class TelegramBotCommandService extends BaseService {
           null,
           downloadUrl, // imageUrl для multimodal
         );
-      } catch (err) {
-        await this.handleError(err, { telegramId, serviceName: this.TAG, nodeName: 'photo_handler' });
+      } catch (error) {
+        await this.handleError(error, { telegramId, serviceName: this.TAG, nodeName: 'photo_handler' });
       }
     });
 
@@ -301,8 +326,8 @@ export class TelegramBotCommandService extends BaseService {
         const text = `[Голосовое]: ${transcript}`;
 
         await this.processFileMessage(user, text, '', downloadUrl, voice.file_id, 'voice', 'audio/ogg', 'voice.ogg', buffer.length, undefined, spinner);
-      } catch (err) {
-        await this.handleError(err, { telegramId, serviceName: this.TAG, nodeName: 'voice_handler' });
+      } catch (error) {
+        await this.handleError(error, { telegramId, serviceName: this.TAG, nodeName: 'voice_handler' });
       }
     });
 
@@ -327,8 +352,8 @@ export class TelegramBotCommandService extends BaseService {
         const text = `[Видеосообщение]: ${transcript}`;
 
         await this.processFileMessage(user, text, '', downloadUrl, note.file_id, 'video_note', 'video/mp4', 'video_note.mp4', buffer.length, undefined, spinner);
-      } catch (err) {
-        await this.handleError(err, { telegramId, serviceName: this.TAG, nodeName: 'video_note_handler' });
+      } catch (error) {
+        await this.handleError(error, { telegramId, serviceName: this.TAG, nodeName: 'video_note_handler' });
       }
     });
 
@@ -354,8 +379,8 @@ export class TelegramBotCommandService extends BaseService {
         const text = caption ? `${caption}\n[Видео]: ${transcript}` : `[Видео]: ${transcript}`;
 
         await this.processFileMessage(user, text, '', downloadUrl, video.file_id, 'video', video.mime_type ?? 'video/mp4', video.file_name ?? 'video.mp4', buffer.length, undefined, spinner);
-      } catch (err) {
-        await this.handleError(err, { telegramId, serviceName: this.TAG, nodeName: 'video_handler' });
+      } catch (error) {
+        await this.handleError(error, { telegramId, serviceName: this.TAG, nodeName: 'video_handler' });
       }
     });
 
@@ -381,8 +406,8 @@ export class TelegramBotCommandService extends BaseService {
         const text = caption ? `${caption}\n[Аудио]: ${transcript}` : `[Аудио]: ${transcript}`;
 
         await this.processFileMessage(user, text, '', downloadUrl, audio.file_id, 'audio', audio.mime_type ?? 'audio/mpeg', audio.file_name ?? 'audio.mp3', buffer.length, undefined, spinner);
-      } catch (err) {
-        await this.handleError(err, { telegramId, serviceName: this.TAG, nodeName: 'audio_handler' });
+      } catch (error) {
+        await this.handleError(error, { telegramId, serviceName: this.TAG, nodeName: 'audio_handler' });
       }
     });
 
@@ -431,6 +456,72 @@ export class TelegramBotCommandService extends BaseService {
           return;
         }
 
+        // Формат: reminder:delete:<id> — запрос подтверждения удаления
+        if (data.startsWith('reminder:delete:')) {
+          const reminderId = parseInt(data.slice('reminder:delete:'.length), 10);
+          if (!isNaN(reminderId)) {
+            const reminder = await ReminderEntity.findOne({ where: { id: reminderId, status: ReminderStatusEnum.PENDING } });
+            if (reminder) {
+              const result = this.reminderAgentService.buildDeleteConfirmation(reminder);
+              await this.sendResult(user.telegramId, result.responseText, result.inlineKeyboard ?? null);
+            } else {
+              await this.telegramService.sendMessage('Напоминание не найдено или уже удалено.', user.telegramId);
+            }
+          }
+          return;
+        }
+
+        // Формат: reminder:confirm_delete:<id> — подтверждение удаления
+        if (data.startsWith('reminder:confirm_delete:')) {
+          const reminderId = parseInt(data.slice('reminder:confirm_delete:'.length), 10);
+          if (!isNaN(reminderId)) {
+            const messageId = 'message' in ctx.callbackQuery ? ctx.callbackQuery.message?.message_id : undefined;
+            if (messageId) {
+              await ctx.deleteMessage(messageId).catch(() => undefined);
+            }
+            const responseText = await this.reminderAgentService.cancelReminder(user.telegramId, reminderId);
+            await this.telegramService.sendMessage(responseText, user.telegramId);
+          }
+          return;
+        }
+
+        // Формат: reminder:edit:<id> — начало редактирования из /reminders
+        if (data.startsWith('reminder:edit:')) {
+          const reminderId = parseInt(data.slice('reminder:edit:'.length), 10);
+          if (!isNaN(reminderId)) {
+            const responseText = await this.reminderAgentService.startEditFromCommand(user.telegramId, reminderId);
+            await this.telegramService.sendMessage(responseText, user.telegramId);
+          }
+          return;
+        }
+
+        // Формат: reminder:confirm_edit:<id> — подтверждение изменения
+        if (data.startsWith('reminder:confirm_edit:')) {
+          const reminderId = parseInt(data.slice('reminder:confirm_edit:'.length), 10);
+          if (!isNaN(reminderId)) {
+            const messageId = 'message' in ctx.callbackQuery ? ctx.callbackQuery.message?.message_id : undefined;
+            if (messageId) {
+              await ctx.deleteMessage(messageId).catch(() => undefined);
+            }
+            const responseText = await this.reminderAgentService.applyPendingEdit(user.telegramId, reminderId);
+            await this.telegramService.sendMessage(responseText, user.telegramId);
+          }
+          return;
+        }
+
+        // Формат: reminder:cancel — отмена действия
+        if (data === 'reminder:cancel') {
+          const messageId = 'message' in ctx.callbackQuery ? ctx.callbackQuery.message?.message_id : undefined;
+          const cancelText = '✖️ Действие отменено.';
+          if (messageId) {
+            await this.telegramService.editMessage(cancelText, user.telegramId, messageId).catch(() => undefined);
+          } else {
+            await this.telegramService.sendMessage(cancelText, user.telegramId);
+          }
+          await this.setState(user.telegramId, TelegramDialogStateEnum.IDLE);
+          return;
+        }
+
         // Формат: jobs:<requestId>:<offset>
         if (data.startsWith('jobs:')) {
           const [, requestIdStr, offsetStr] = data.split(':');
@@ -443,17 +534,17 @@ export class TelegramBotCommandService extends BaseService {
           }
           return;
         }
-      } catch (err) {
-        await this.handleError(err, { telegramId, serviceName: this.TAG, nodeName: 'callback_handler' });
+      } catch (error) {
+        await this.handleError(error, { telegramId, serviceName: this.TAG, nodeName: 'callback_handler' });
       }
     });
 
     // Глобальный обработчик ошибок бота
-    bot.catch((err: unknown, ctx) => {
-      this.loggerService.error(this.TAG, 'Unhandled bot error', err);
-      const tid = ctx.chat?.id?.toString();
-      if (tid) {
-        this.sendErrorToUser(tid, err).catch(() => undefined);
+    bot.catch((error: unknown, ctx) => {
+      this.loggerService.error(this.TAG, 'Unhandled bot error', error);
+      const chatTelegramId = ctx.chat?.id?.toString();
+      if (chatTelegramId) {
+        this.sendErrorToUser(chatTelegramId, error).catch(() => undefined);
       }
     });
   };
@@ -462,22 +553,22 @@ export class TelegramBotCommandService extends BaseService {
 
   private sendModelPicker = async (user: UserEntity): Promise<void> => {
     const models = await ModelEntity.find({ where: { isActive: true }, order: { sortOrder: 'ASC' } });
-    const defaultModel = models.find((m) => m.isDefault);
+    const defaultModel = models.find((model) => model.isDefault);
     const currentModelId = user.modelId ?? defaultModel?.modelId ?? models[0]?.modelId ?? '';
 
     const lines = ['<b>Выбери модель для общения:</b>', ''];
-    for (const m of models) {
-      const marker = m.modelId === currentModelId ? '✅ ' : '';
-      lines.push(`${marker}<b>${m.name}</b>`);
-      lines.push(`📝 ${m.modalities}`);
-      lines.push(`💰 вход ${m.priceIn}/1M · выход ${m.priceOut}/1M`);
+    for (const model of models) {
+      const marker = model.modelId === currentModelId ? '✅ ' : '';
+      lines.push(`${marker}<b>${model.name}</b>`);
+      lines.push(`📝 ${model.modalities}`);
+      lines.push(`💰 вход ${model.priceIn}/1M · выход ${model.priceOut}/1M`);
       lines.push('');
     }
 
     const keyboard = {
-      inline_keyboard: models.map((m) => [{
-        text: (m.modelId === currentModelId ? '✅ ' : '') + m.name,
-        callback_data: `model:${m.modelId}`,
+      inline_keyboard: models.map((model) => [{
+        text: (model.modelId === currentModelId ? '✅ ' : '') + model.name,
+        callback_data: `model:${model.modelId}`,
       }]),
     };
 
@@ -515,7 +606,7 @@ export class TelegramBotCommandService extends BaseService {
     imageUrl?: string,
     spinner?: Awaited<ReturnType<TelegramBotCommandService['createSpinner']>>,
   ): Promise<void> => {
-    const mediaType = (fileType as any) ?? 'document';
+    const mediaType = (fileType ?? 'document') as MediaType;
 
     const request = await this.requestService.create({
       userId: user.id,
@@ -648,16 +739,16 @@ export class TelegramBotCommandService extends BaseService {
       } else {
         await this.sendResult(user.telegramId, result.responseText, result.inlineKeyboard ?? null);
       }
-    } catch (err) {
+    } catch (error) {
       spinner?.stop();
-      if (err instanceof Error && err.message === 'Cancelled') {
+      if (error instanceof Error && error.message === 'Cancelled') {
         if (spinner) {
           await spinner.finish('⛔ Поиск остановлен.');
         } else {
           await this.telegramService.sendMessage('⛔ Поиск остановлен.', user.telegramId);
         }
       } else {
-        await this.sendErrorToUser(user.telegramId, err);
+        await this.sendErrorToUser(user.telegramId, error);
       }
     } finally {
       this.cancelMap.delete(user.telegramId);
@@ -721,7 +812,7 @@ export class TelegramBotCommandService extends BaseService {
     if (this.ALLOWED_TELEGRAM_IDS.size === 0) {
       return false;
     }
-    return user.status === 'active' && this.ALLOWED_TELEGRAM_IDS.has(user.telegramId);
+    return user.status === UserStatusEnum.ACTIVE && this.ALLOWED_TELEGRAM_IDS.has(user.telegramId);
   };
 
   private ensureUser = async (ctx: Context): Promise<UserEntity> => {
@@ -734,8 +825,8 @@ export class TelegramBotCommandService extends BaseService {
     if (!user) {
       user = new UserEntity();
       user.telegramId = telegramId;
-      user.role = 'user';
-      user.status = 'active';
+      user.role = UserRoleEnum.USER;
+      user.status = UserStatusEnum.ACTIVE;
       user.extraData = {};
     }
 
@@ -764,21 +855,21 @@ export class TelegramBotCommandService extends BaseService {
     return state;
   };
 
-  private setState = async (telegramId: string, nextState: TelegramDialogStateEnum, data?: Record<string, any>): Promise<void> => {
+  private setState = async (telegramId: string, nextState: TelegramDialogStateEnum, data?: Record<string, unknown>): Promise<void> => {
     const state = await this.getOrCreateState(telegramId);
     state.state = nextState;
     state.data = data ?? state.data ?? {};
     await state.save();
   };
 
-  private handleError = async (err: unknown, context: {
+  private handleError = async (error: unknown, context: {
     telegramId?: string;
     requestId?: number;
     serviceName?: string;
     nodeName?: string;
   }): Promise<void> => {
     await this.errorLogService.handle({
-      error: err,
+      error: error,
       serviceName: context.serviceName,
       nodeName: context.nodeName,
       requestId: context.requestId,
@@ -790,9 +881,9 @@ export class TelegramBotCommandService extends BaseService {
   private escapeHtml = (text: string): string =>
     text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-  private formatErrorForChat = (err: unknown): string => {
-    const message = err instanceof Error ? err.message : String(err);
-    const rawStack = err instanceof Error && err.stack ? err.stack.trim() : '';
+  private formatErrorForChat = (error: unknown): string => {
+    const message = error instanceof Error ? error.message : String(error);
+    const rawStack = error instanceof Error && error.stack ? error.stack.trim() : '';
     const msgPart = `⚠️ Ошибка: <b>${this.escapeHtml(message)}</b>`;
     if (!rawStack) {
       return msgPart.length <= this.MAX_ERROR_MESSAGE_LENGTH ? msgPart : msgPart.slice(0, this.MAX_ERROR_MESSAGE_LENGTH - 10) + '…';
@@ -806,12 +897,12 @@ export class TelegramBotCommandService extends BaseService {
     return `${prefix}${codeWrap}${stackInBlock}${codeEnd}`;
   };
 
-  private sendErrorToUser = async (telegramId: string | undefined, err: unknown): Promise<void> => {
+  private sendErrorToUser = async (telegramId: string | undefined, error: unknown): Promise<void> => {
     if (!telegramId) {
       return;
     }
     try {
-      await this.telegramService.sendMessage(this.formatErrorForChat(err), telegramId);
+      await this.telegramService.sendMessage(this.formatErrorForChat(error), telegramId);
     } catch { /* ignore */ }
   };
 }

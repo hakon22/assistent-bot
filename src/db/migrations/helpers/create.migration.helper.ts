@@ -4,7 +4,7 @@ import { promisify } from 'util';
 class CreateMigrationHelper {
   private execAsync = promisify(exec);
 
-  private readonly defaultMigrationPath = './server/db/migrations';
+  private readonly defaultMigrationPath = './src/db/migrations';
 
   private createMigration = async (migrationName: string): Promise<void> => {
     const migrationFullPath = `${this.defaultMigrationPath}/${migrationName}`;

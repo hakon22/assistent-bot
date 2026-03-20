@@ -8,6 +8,7 @@ import { DatabaseService } from '@/db/database.service';
 import { TelegramBotService } from '@/services/telegram/telegram-bot.service';
 import { TelegramBotCommandService } from '@/services/telegram/telegram-bot-command.service';
 import { RouterService } from '@/services/app/router.service';
+import { ReminderSchedulerService } from '@/services/scheduler/reminder-scheduler.service';
 
 class BotApplication {
   private readonly databaseService = Container.get(DatabaseService);
@@ -17,6 +18,8 @@ class BotApplication {
   private readonly telegramBotCommandService = Container.get(TelegramBotCommandService);
 
   private readonly routerService = Container.get(RouterService);
+
+  private readonly reminderSchedulerService = Container.get(ReminderSchedulerService);
 
   private readonly app = express();
 
@@ -31,9 +34,11 @@ class BotApplication {
     this.app.use(this.routerService.get());
   };
 
-  public async start(): Promise<void> {
+  public start = async (): Promise<void> => {
     await this.databaseService.init();
     await this.telegramBotService.init();
+
+    this.reminderSchedulerService.start();
 
     const bot = this.telegramBotService.getBot();
 
@@ -61,11 +66,12 @@ class BotApplication {
     const shutdown = (signal: string) => {
       bot.stop(signal);
       server.close();
+      process.exit(0);
     };
 
     process.once('SIGINT', () => shutdown('SIGINT'));
     process.once('SIGTERM', () => shutdown('SIGTERM'));
-  }
+  };
 }
 
 new BotApplication()
