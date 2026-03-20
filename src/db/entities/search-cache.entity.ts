@@ -49,8 +49,7 @@ export class SearchCacheEntity extends BaseEntity {
 
   /** Дата создания записи */
   @CreateDateColumn({
-    name: 'created_at',
     type: 'timestamp with time zone',
   })
-  public createdAt: Date;
+  public created: Date;
 }

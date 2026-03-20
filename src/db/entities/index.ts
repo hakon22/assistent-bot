@@ -11,6 +11,7 @@ import { JobVacancyEntity } from '@/db/entities/job-vacancy.entity';
 import { WebResearchLogEntity } from '@/db/entities/web-research-log.entity';
 import { ErrorLogEntity } from '@/db/entities/error-log.entity';
 import { TelegramDialogStateEntity } from '@/db/entities/telegram-dialog-state.entity';
+import { ReminderEntity } from '@/db/entities/reminder.entity';
 
 export const entities = [
   UserEntity,
@@ -26,4 +27,5 @@ export const entities = [
   WebResearchLogEntity,
   ErrorLogEntity,
   TelegramDialogStateEntity,
+  ReminderEntity,
 ];

@@ -102,16 +102,16 @@ export class PlaywrightTool {
           { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
           { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
         ];
-        const fakePlugins = pluginData.map((p) => {
+        const fakePlugins = pluginData.map((pluginInfo) => {
           const plugin = Object.create(Plugin.prototype);
-          Object.defineProperty(plugin, 'name', { get: () => p.name });
-          Object.defineProperty(plugin, 'filename', { get: () => p.filename });
-          Object.defineProperty(plugin, 'description', { get: () => p.description });
+          Object.defineProperty(plugin, 'name', { get: () => pluginInfo.name });
+          Object.defineProperty(plugin, 'filename', { get: () => pluginInfo.filename });
+          Object.defineProperty(plugin, 'description', { get: () => pluginInfo.description });
           Object.defineProperty(plugin, 'length', { get: () => 0 });
           return plugin;
         });
         Object.defineProperty(navigator, 'plugins', {
-          get: () => Object.assign(fakePlugins, { item: (i: number) => fakePlugins[i], namedItem: (n: string) => fakePlugins.find((p) => p.name === n) ?? null, length: fakePlugins.length }),
+          get: () => Object.assign(fakePlugins, { item: (pluginIndex: number) => fakePlugins[pluginIndex], namedItem: (pluginName: string) => fakePlugins.find((plugin) => plugin.name === pluginName) ?? null, length: fakePlugins.length }),
         });
         Object.defineProperty(navigator, 'mimeTypes', { get: () => ({ length: 0, item: () => null, namedItem: () => null }) });
 
@@ -138,15 +138,15 @@ export class PlaywrightTool {
 
         // Canvas fingerprint noise
         const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
-        HTMLCanvasElement.prototype.toDataURL = function(type?: string, quality?: any) {
-          const ctx = this.getContext('2d');
-          if (ctx) {
-            const imageData = ctx.getImageData(0, 0, this.width, this.height);
+        HTMLCanvasElement.prototype.toDataURL = function(type?: string, quality?: number) {
+          const canvasContext = this.getContext('2d');
+          if (canvasContext) {
+            const imageData = canvasContext.getImageData(0, 0, this.width, this.height);
             // Добавляем минимальный шум
-            for (let i = 0; i < 10; i++) {
-              imageData.data[i * 4] ^= 1;
+            for (let pixelIndex = 0; pixelIndex < 10; pixelIndex++) {
+              imageData.data[pixelIndex * 4] ^= 1;
             }
-            ctx.putImageData(imageData, 0, 0);
+            canvasContext.putImageData(imageData, 0, 0);
           }
           return origToDataURL.call(this, type, quality);
         };
@@ -160,8 +160,8 @@ export class PlaywrightTool {
         };
 
         // Удаляем cdc_ маркеры Chrome DevTools
-        Object.keys(window).filter((k) => k.startsWith('cdc_')).forEach((k) => {
-          try { delete (window as any)[k]; } catch { /* ignore */ }
+        Object.keys(window).filter((windowKey) => windowKey.startsWith('cdc_')).forEach((windowKey) => {
+          try { delete (window as any)[windowKey]; } catch { /* ignore */ }
         });
 
         // Permissions API — как будто уведомления не запрошены
@@ -210,9 +210,9 @@ export class PlaywrightTool {
       const result = await this.extractPageData(page, input.url);
       this.loggerService.info(this.TAG, `done: ${result.finalUrl} content=${result.content.length}ch filters=${result.filters.length} pagination=${result.pagination.length}`);
       return result;
-    } catch (e) {
-      this.loggerService.error(this.TAG, `browse failed [${input.url}]:`, e);
-      throw e;
+    } catch (error) {
+      this.loggerService.error(this.TAG, `browse failed [${input.url}]:`, error);
+      throw error;
     } finally {
       await page?.close().catch(() => undefined);
       await context?.close().catch(() => undefined);
@@ -254,9 +254,9 @@ export class PlaywrightTool {
     ];
     for (const text of candidates) {
       try {
-        const el = page.getByRole('button', { name: text, exact: false }).first();
-        if (await el.isVisible({ timeout: 300 })) {
-          await el.click({ timeout: 1000 });
+        const element = page.getByRole('button', { name: text, exact: false }).first();
+        if (await element.isVisible({ timeout: 300 })) {
+          await element.click({ timeout: 1000 });
           await page.waitForTimeout(500);
           return;
         }
@@ -276,24 +276,24 @@ export class PlaywrightTool {
         break;
       }
       case 'click_text': {
-        const el = page.getByText(action.value, { exact: false }).first();
-        await el.scrollIntoViewIfNeeded({ timeout: 3000 });
-        await el.click({ timeout: 5000 });
+        const element = page.getByText(action.value, { exact: false }).first();
+        await element.scrollIntoViewIfNeeded({ timeout: 3000 });
+        await element.click({ timeout: 5000 });
         await page.waitForTimeout(800);
         try { await page.waitForLoadState('networkidle', { timeout: 3000 }); } catch { /* ok */ }
         break;
       }
       case 'click_selector': {
-        const el = page.locator(action.selector).first();
-        await el.scrollIntoViewIfNeeded({ timeout: 3000 });
-        await el.click({ timeout: 5000 });
+        const element = page.locator(action.selector).first();
+        await element.scrollIntoViewIfNeeded({ timeout: 3000 });
+        await element.click({ timeout: 5000 });
         await page.waitForTimeout(800);
         try { await page.waitForLoadState('networkidle', { timeout: 3000 }); } catch { /* ok */ }
         break;
       }
       case 'fill_placeholder': {
-        const input = page.getByPlaceholder(action.placeholder, { exact: false }).first();
-        await input.fill(action.value, { timeout: 5000 });
+        const inputElement = page.getByPlaceholder(action.placeholder, { exact: false }).first();
+        await inputElement.fill(action.value, { timeout: 5000 });
         await page.waitForTimeout(300);
         break;
       }
@@ -314,9 +314,9 @@ export class PlaywrightTool {
         break;
       }
       case 'hover': {
-        const el = page.locator(action.selector).first();
-        await el.scrollIntoViewIfNeeded({ timeout: 3000 });
-        await el.hover({ timeout: 3000 });
+        const element = page.locator(action.selector).first();
+        await element.scrollIntoViewIfNeeded({ timeout: 3000 });
+        await element.hover({ timeout: 3000 });
         await page.waitForTimeout(500);
         break;
       }
@@ -357,40 +357,40 @@ export class PlaywrightTool {
       try {
         const screenshotsDir = path.join(process.cwd(), 'screenshots');
         fs.mkdirSync(screenshotsDir, { recursive: true });
-        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         const safeName = (finalUrl ?? originalUrl).replace(/[^a-zA-Z0-9а-яА-Я]/g, '_').substring(0, 60);
-        fs.writeFileSync(path.join(screenshotsDir, `${ts}_${safeName}.jpg`), screenshotBuf);
+        fs.writeFileSync(path.join(screenshotsDir, `${timestamp}_${safeName}.jpg`), screenshotBuf);
       } catch { /* non-critical */ }
     }
 
     // Основной контент
     const content = await page.evaluate(() => {
-      const remove = document.querySelectorAll('nav, script, style, noscript, .ads, .advertisement, .cookie, footer, .footer, header');
-      remove.forEach((el) => el.remove());
-      const main = document.querySelector(
+      const elementsToRemove = document.querySelectorAll('nav, script, style, noscript, .ads, .advertisement, .cookie, footer, .footer, header');
+      elementsToRemove.forEach((removableElement) => removableElement.remove());
+      const mainElement = document.querySelector(
         'main, article, [role="main"], .content, #content, .main, ' +
         '.catalog, .catalog-section, .catalog-container, .products, .product-list, .product-grid, ' +
         '.items, .goods, .shop-list, #catalog, #products, .category-products, ' +
         '.page-content, .page__content, #page-content, .site-content',
       ) ?? document.body;
-      return ((main as HTMLElement).innerText ?? main.textContent ?? '').replace(/\s+/g, ' ').trim().substring(0, 10000);
+      return ((mainElement as HTMLElement).innerText ?? mainElement.textContent ?? '').replace(/\s+/g, ' ').trim().substring(0, 10000);
     });
 
     // Кнопки с CSS-селектором для точного повторного клика
     const buttons = await page.evaluate(() => {
       const result: { text: string; selector: string; }[] = [];
-      const els = document.querySelectorAll('button, [role="button"], .btn, input[type="submit"], input[type="button"], a.button, a.btn');
-      els.forEach((el, i) => {
-        const text = ((el as HTMLElement).textContent ?? (el as HTMLInputElement).value ?? '').trim().replace(/\s+/g, ' ');
+      const buttonElements = document.querySelectorAll('button, [role="button"], .btn, input[type="submit"], input[type="button"], a.button, a.btn');
+      buttonElements.forEach((buttonElement, buttonIndex) => {
+        const text = ((buttonElement as HTMLElement).textContent ?? (buttonElement as HTMLInputElement).value ?? '').trim().replace(/\s+/g, ' ');
         if (!text || text.length > 120) return;
         // Строим простой selector
-        let sel = el.tagName.toLowerCase();
-        if (el.id) sel = `#${CSS.escape(el.id)}`;
-        else if (el.className && typeof el.className === 'string') {
-          const cls = el.className.trim().split(/\s+/)[0];
-          if (cls) sel = `${el.tagName.toLowerCase()}.${CSS.escape(cls)}:nth-of-type(${i + 1})`;
+        let selector = buttonElement.tagName.toLowerCase();
+        if (buttonElement.id) selector = `#${CSS.escape(buttonElement.id)}`;
+        else if (buttonElement.className && typeof buttonElement.className === 'string') {
+          const firstCssClass = buttonElement.className.trim().split(/\s+/)[0];
+          if (firstCssClass) selector = `${buttonElement.tagName.toLowerCase()}.${CSS.escape(firstCssClass)}:nth-of-type(${buttonIndex + 1})`;
         }
-        result.push({ text, selector: sel });
+        result.push({ text, selector });
       });
       return result.slice(0, 60);
     });
@@ -417,11 +417,11 @@ export class PlaywrightTool {
         '[class*="next"]', '[class*="prev"]',
       ];
       const seen = new Set<string>();
-      for (const sel of paginationSelectors) {
-        document.querySelectorAll(sel).forEach((el) => {
-          const a = el.tagName === 'A' ? el as HTMLAnchorElement : el.querySelector('a');
-          const text = (el as HTMLElement).textContent?.trim().replace(/\s+/g, ' ') ?? '';
-          const href = a?.href ?? '';
+      for (const paginationSelector of paginationSelectors) {
+        document.querySelectorAll(paginationSelector).forEach((paginationElement) => {
+          const anchorElement = paginationElement.tagName === 'A' ? paginationElement as HTMLAnchorElement : paginationElement.querySelector('a');
+          const text = (paginationElement as HTMLElement).textContent?.trim().replace(/\s+/g, ' ') ?? '';
+          const href = anchorElement?.href ?? '';
           if (!text || seen.has(text + href)) return;
           seen.add(text + href);
           result.push({ text, href: href || undefined });
@@ -435,36 +435,36 @@ export class PlaywrightTool {
       const result: { label: string; type: 'select' | 'checkbox' | 'radio' | 'button'; selector: string; options?: string[]; }[] = [];
 
       // <select> элементы (сортировка, категории)
-      document.querySelectorAll('select').forEach((sel, i) => {
-        const label = sel.getAttribute('aria-label')
-          ?? sel.getAttribute('name')
-          ?? sel.id
-          ?? sel.closest('label')?.textContent?.trim()
-          ?? `select-${i}`;
-        const options = Array.from(sel.options).map((opt) => opt.text.trim()).filter(Boolean);
-        const selector = sel.id ? `#${CSS.escape(sel.id)}` : `select:nth-of-type(${i + 1})`;
+      document.querySelectorAll('select').forEach((selectElement, selectIndex) => {
+        const label = selectElement.getAttribute('aria-label')
+          ?? selectElement.getAttribute('name')
+          ?? selectElement.id
+          ?? selectElement.closest('label')?.textContent?.trim()
+          ?? `select-${selectIndex}`;
+        const options = Array.from(selectElement.options).map((option) => option.text.trim()).filter(Boolean);
+        const selector = selectElement.id ? `#${CSS.escape(selectElement.id)}` : `select:nth-of-type(${selectIndex + 1})`;
         result.push({ label: label.trim(), type: 'select', selector, options });
       });
 
       // Фильтры-чекбоксы
-      document.querySelectorAll('input[type="checkbox"]').forEach((el, i) => {
-        const label = document.querySelector(`label[for="${el.id}"]`)?.textContent?.trim()
-          ?? el.closest('label')?.textContent?.trim()
-          ?? el.getAttribute('name')
-          ?? `checkbox-${i}`;
+      document.querySelectorAll('input[type="checkbox"]').forEach((checkboxElement, checkboxIndex) => {
+        const label = document.querySelector(`label[for="${checkboxElement.id}"]`)?.textContent?.trim()
+          ?? checkboxElement.closest('label')?.textContent?.trim()
+          ?? checkboxElement.getAttribute('name')
+          ?? `checkbox-${checkboxIndex}`;
         if (!label || label.length > 100) return;
-        const selector = el.id ? `#${CSS.escape(el.id)}` : `input[type="checkbox"]:nth-of-type(${i + 1})`;
+        const selector = checkboxElement.id ? `#${CSS.escape(checkboxElement.id)}` : `input[type="checkbox"]:nth-of-type(${checkboxIndex + 1})`;
         result.push({ label: label.trim(), type: 'checkbox', selector });
       });
 
       // Radio-фильтры
-      document.querySelectorAll('input[type="radio"]').forEach((el, i) => {
-        const label = document.querySelector(`label[for="${el.id}"]`)?.textContent?.trim()
-          ?? el.closest('label')?.textContent?.trim()
-          ?? el.getAttribute('name')
-          ?? `radio-${i}`;
+      document.querySelectorAll('input[type="radio"]').forEach((radioElement, radioIndex) => {
+        const label = document.querySelector(`label[for="${radioElement.id}"]`)?.textContent?.trim()
+          ?? radioElement.closest('label')?.textContent?.trim()
+          ?? radioElement.getAttribute('name')
+          ?? `radio-${radioIndex}`;
         if (!label || label.length > 100) return;
-        const selector = el.id ? `#${CSS.escape(el.id)}` : `input[type="radio"]:nth-of-type(${i + 1})`;
+        const selector = radioElement.id ? `#${CSS.escape(radioElement.id)}` : `input[type="radio"]:nth-of-type(${radioIndex + 1})`;
         result.push({ label: label.trim(), type: 'radio', selector });
       });
 

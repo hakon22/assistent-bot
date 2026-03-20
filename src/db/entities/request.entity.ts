@@ -31,13 +31,6 @@ export class RequestEntity extends BaseEntity {
   })
   public user: UserEntity | null;
 
-  /** FK — id пользователя */
-  @Column('integer', {
-    name: 'user_id',
-    nullable: true,
-  })
-  public userId: number | null;
-
   /** Telegram id сообщения, породившего запрос */
   @Column('bigint', {
     name: 'telegram_message_id',
@@ -103,15 +96,13 @@ export class RequestEntity extends BaseEntity {
 
   /** Дата создания записи */
   @CreateDateColumn({
-    name: 'created_at',
     type: 'timestamp with time zone',
   })
-  public createdAt: Date;
+  public created: Date;
 
   /** Дата последнего изменения записи */
   @UpdateDateColumn({
-    name: 'updated_at',
     type: 'timestamp with time zone',
   })
-  public updatedAt: Date;
+  public updated: Date;
 }

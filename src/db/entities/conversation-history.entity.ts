@@ -16,10 +16,9 @@ export class ConversationHistoryEntity extends BaseEntity {
 
   /** Дата создания записи */
   @CreateDateColumn({
-    name: 'created_at',
     type: 'timestamp with time zone',
   })
-  public createdAt: Date;
+  public created: Date;
 
   /** Пользователь, которому принадлежит диалог */
   @ManyToOne(() => UserEntity, {
@@ -30,13 +29,6 @@ export class ConversationHistoryEntity extends BaseEntity {
     name: 'user_id',
   })
   public user: UserEntity | null;
-
-  /** FK — id пользователя */
-  @Column('integer', {
-    name: 'user_id',
-    nullable: true,
-  })
-  public userId: number | null;
 
   /** Telegram id пользователя (дублирует для быстрой выборки) */
   @Column('character varying', {
@@ -54,13 +46,6 @@ export class ConversationHistoryEntity extends BaseEntity {
     name: 'request_id',
   })
   public request: RequestEntity | null;
-
-  /** FK — id запроса */
-  @Column('integer', {
-    name: 'request_id',
-    nullable: true,
-  })
-  public requestId: number | null;
 
   /** Роль автора сообщения (user / assistant / system / tool) */
   @Column('character varying')

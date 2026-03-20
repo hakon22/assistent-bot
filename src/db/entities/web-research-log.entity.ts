@@ -22,13 +22,6 @@ export class WebResearchLogEntity extends BaseEntity {
   })
   public request: RequestEntity | null;
 
-  /** FK — id запроса */
-  @Column('integer', {
-    name: 'request_id',
-    nullable: true,
-  })
-  public requestId: number | null;
-
   /** Пользователь, для которого проводилось исследование */
   @ManyToOne(() => UserEntity, {
     nullable: true,
@@ -38,13 +31,6 @@ export class WebResearchLogEntity extends BaseEntity {
     name: 'user_id',
   })
   public user: UserEntity | null;
-
-  /** FK — id пользователя */
-  @Column('integer', {
-    name: 'user_id',
-    nullable: true,
-  })
-  public userId: number | null;
 
   /** Цель исследования (что нужно найти) */
   @Column('text')
@@ -92,8 +78,7 @@ export class WebResearchLogEntity extends BaseEntity {
 
   /** Дата создания записи */
   @CreateDateColumn({
-    name: 'created_at',
     type: 'timestamp with time zone',
   })
-  public createdAt: Date;
+  public created: Date;
 }

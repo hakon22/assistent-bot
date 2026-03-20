@@ -1,5 +1,7 @@
-import { Singleton } from 'typescript-ioc';
+import { Container, Singleton } from 'typescript-ioc';
 import axios from 'axios';
+
+import { LoggerService } from '@/services/app/logger.service';
 
 export interface HhVacancy {
   id: string;
@@ -9,12 +11,46 @@ export interface HhVacancy {
   area: string;
   url: string;
   snippet: string;
-  published_at: string;
+  publishedAt: string;
+}
+
+interface HhSalaryApiResponse {
+  from: number | null;
+  to: number | null;
+  currency: string;
+}
+
+interface HhVacancyApiResponse {
+  id: string;
+  name: string;
+  employer: { name: string; } | null;
+  salary: HhSalaryApiResponse | null;
+  area: { name: string; } | null;
+  alternate_url: string | null;
+  snippet: {
+    requirement: string | null;
+    responsibility: string | null;
+  } | null;
+  published_at: string | null;
+}
+
+interface HhSearchParams {
+  text: string;
+  area: number;
+  per_page: number;
+  page: number;
+  date_from: string;
+  order_by: string;
+  salary?: number;
+  experience?: string;
+  schedule?: string;
 }
 
 @Singleton
 export class HhApiTool {
   private readonly TAG = 'HhApiTool';
+
+  private readonly loggerService = Container.get(LoggerService);
 
   private readonly baseUrl = 'https://api.hh.ru';
 
@@ -35,14 +71,14 @@ export class HhApiTool {
       // Ищем вакансии за последние 7 дней
       const dateFrom = new Date();
       dateFrom.setDate(dateFrom.getDate() - 7);
-      const dateFromStr = dateFrom.toISOString().split('T')[0];
+      const dateFromString = dateFrom.toISOString().split('T')[0];
 
-      const params: Record<string, any> = {
+      const params: HhSearchParams = {
         text: query,
         area,
         per_page: limit,
         page: 0,
-        date_from: dateFromStr,
+        date_from: dateFromString,
         order_by: 'publication_time', // 'relevance' конфликтует с date_from → 400
       };
 
@@ -62,25 +98,25 @@ export class HhApiTool {
         timeout: 15000,
       });
 
-      const items = response.data?.items ?? [];
-      return items.map((v: any) => ({
-        id: v.id ?? '',
-        name: v.name ?? '',
-        employer: v.employer?.name ?? '',
-        salary: this.formatSalary(v.salary),
-        area: v.area?.name ?? '',
-        url: v.alternate_url ?? `https://hh.ru/vacancy/${v.id}`,
-        snippet: [v.snippet?.requirement ?? '', v.snippet?.responsibility ?? ''].filter(Boolean).join(' | '),
-        published_at: v.published_at ?? '',
+      const items: HhVacancyApiResponse[] = response.data?.items ?? [];
+      return items.map((vacancyData) => ({
+        id: vacancyData.id ?? '',
+        name: vacancyData.name ?? '',
+        employer: vacancyData.employer?.name ?? '',
+        salary: this.formatSalary(vacancyData.salary),
+        area: vacancyData.area?.name ?? '',
+        url: vacancyData.alternate_url ?? `https://hh.ru/vacancy/${vacancyData.id}`,
+        snippet: [vacancyData.snippet?.requirement ?? '', vacancyData.snippet?.responsibility ?? ''].filter(Boolean).join(' | '),
+        publishedAt: vacancyData.published_at ?? '',
       }));
-    } catch (e: any) {
-      const detail = e?.response?.data ? JSON.stringify(e.response.data) : '';
-      console.error(`[${this.TAG}] hh.ru API error:`, e, detail);
+    } catch (error) {
+      const detail = (error as any)?.response?.data ? JSON.stringify((error as any).response.data) : '';
+      this.loggerService.error(this.TAG, `hh.ru API error: ${detail}`, error);
       return [];
     }
   };
 
-  private formatSalary = (salary: any): string => {
+  private formatSalary = (salary: HhSalaryApiResponse | null): string => {
     if (!salary) {
       return 'не указана';
     }

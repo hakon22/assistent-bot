@@ -86,46 +86,48 @@ export class LoggerService {
     });
   }
 
-  private getMeta = (context: any): { module: string; } => ({
+  private buildLogMetadata = (context: string): { module: string; } => ({
     module: context,
   });
 
-  private getArgs = (args: any[], error?: boolean) => {
-    const result: any[] = [];
+  private buildLogMessage = (args: unknown[], isError?: boolean) => {
+    const result: string[] = [];
 
-    args.forEach((arg) => {
-      if (!arg) {
+    args.forEach((logArgument) => {
+      if (!logArgument) {
         return false;
       }
-      if (arg && !(typeof arg === 'object') && !Array.isArray(arg)) {
-        result.push(arg);
-      } else if (arg instanceof Error) {
-        result.push(arg?.stack ? arg.stack : arg);
+      if (logArgument && !(typeof logArgument === 'object') && !Array.isArray(logArgument)) {
+        result.push(String(logArgument));
+      } else if (logArgument instanceof Error) {
+        result.push(logArgument?.stack ? logArgument.stack : String(logArgument));
       } else {
-        result.push((error ? JSON.stringify(arg, null, 2) : JSON.stringify(arg)));
+        result.push((isError ? JSON.stringify(logArgument, null, 2) : JSON.stringify(logArgument)));
       }
     });
     return result.join(' ');
   };
 
-  private log = (level: 'error' | 'warn' | 'info' | 'http' | 'verbose' | 'debug' | 'silly', context: string, args: any[], error?: boolean) => {
-    const text = this.getArgs(args, error);
-    this.logger.log(level, text, this.getMeta(context));
+  private log = (level: 'error' | 'warn' | 'info' | 'http' | 'verbose' | 'debug' | 'silly', context: string, args: unknown[], isError?: boolean) => {
+    const text = this.buildLogMessage(args, isError);
+    this.logger.log(level, text, this.buildLogMetadata(context));
   };
 
-  public info = (message: any, ...args: any[]) => this.log('info', message, args);
+  public info = (message: unknown, ...args: unknown[]) => this.log('info', String(message), args);
 
-  public debug = (message: any, ...args: any[]) => this.log('debug', message, args);
+  public debug = (message: unknown, ...args: unknown[]) => this.log('debug', String(message), args);
 
-  public warn = (message: any, ...args: any[]) => this.log('warn', message, args);
+  public warn = (message: unknown, ...args: unknown[]) => this.log('warn', String(message), args);
 
-  public error = (message: any, ...args: any[]) => {
-    if (args && args[0]?.type === 'PRECONDITION FAILED') {
+  public error = (message: unknown, ...args: unknown[]) => {
+    const firstArg = args[0] as { type?: string; } | undefined;
+    if (firstArg?.type === 'PRECONDITION FAILED') {
       return;
     }
+    const typedMessage = message as { type?: string; } | string | undefined;
     if (message && (typeof message === 'string')) {
       this.log('error', message, args, true);
-    } else if (message?.type !== 'PRECONDITION FAILED') {
+    } else if ((typedMessage as { type?: string; })?.type !== 'PRECONDITION FAILED') {
       args.push(message);
       this.log('error', '', args, true);
     }

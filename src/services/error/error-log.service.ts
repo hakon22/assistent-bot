@@ -1,7 +1,9 @@
 import { Container, Singleton } from 'typescript-ioc';
 
 import { ErrorLogEntity } from '@/db/entities/error-log.entity';
+import { RequestEntity } from '@/db/entities/request.entity';
 import { RequestStatusEntity } from '@/db/entities/request-status.entity';
+import { UserEntity } from '@/db/entities/user.entity';
 import { LoggerService } from '@/services/app/logger.service';
 import { TelegramBotService } from '@/services/telegram/telegram-bot.service';
 
@@ -21,10 +23,11 @@ export class ErrorLogService {
     serviceName?: string;
     nodeName?: string;
     requestId?: number;
+    userId?: number;
     userTelegramId?: string;
     notifyUser?: boolean;
   }): Promise<void> => {
-    const { error, serviceName, nodeName, requestId, userTelegramId, notifyUser = true } = options;
+    const { error, serviceName, nodeName, requestId, userId, userTelegramId, notifyUser = true } = options;
 
     const errorMessage = error instanceof Error ? error.message : String(error);
     const errorStack = error instanceof Error ? (error.stack ?? null) : null;
@@ -33,8 +36,8 @@ export class ErrorLogService {
 
     try {
       const log = new ErrorLogEntity();
-      log.requestId = requestId ?? null;
-      log.userTelegramId = userTelegramId ?? null;
+      log.request = requestId ? { id: requestId } as RequestEntity : null;
+      log.user = userId ? { id: userId } as UserEntity : null;
       log.serviceName = serviceName ?? null;
       log.nodeName = nodeName ?? null;
       log.errorMessage = errorMessage;
@@ -45,7 +48,7 @@ export class ErrorLogService {
 
       if (requestId) {
         const requestStatus = new RequestStatusEntity();
-        requestStatus.requestId = requestId;
+        requestStatus.request = { id: requestId } as RequestEntity;
         requestStatus.status = 'failed';
         requestStatus.agentName = serviceName ?? null;
         requestStatus.notes = `Error in ${nodeName ?? serviceName}: ${errorMessage.substring(0, 200)}`;

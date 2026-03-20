@@ -1,11 +1,13 @@
 import { Container, Singleton } from 'typescript-ioc';
 import { SystemMessage, HumanMessage } from '@langchain/core/messages';
 
+import { BaseAgentService } from '@/services/agents/base-agent.service';
 import { ModelService } from '@/services/model/model.service';
 import { HhApiTool, type HhVacancy } from '@/services/tools/hh-api.tool';
+import { RequestEntity } from '@/db/entities/request.entity';
 import { SearchHistoryEntity } from '@/db/entities/search-history.entity';
 import { JobVacancyEntity } from '@/db/entities/job-vacancy.entity';
-import { ConversationHistoryEntity } from '@/db/entities/conversation-history.entity';
+import { UserEntity } from '@/db/entities/user.entity';
 
 // hh.ru area codes
 const HH_AREAS: Record<string, number> = {
@@ -32,8 +34,10 @@ export interface JobSearchAgentResult {
 }
 
 @Singleton
-export class JobSearchAgentService {
-  private readonly TAG = 'JobSearchAgentService';
+export class JobSearchAgentService extends BaseAgentService {
+  protected readonly TAG = 'JobSearchAgentService';
+
+  protected readonly AGENT_NAME = 'job_search_agent';
 
   private readonly modelService = Container.get(ModelService);
 
@@ -117,7 +121,7 @@ export class JobSearchAgentService {
   /** Обработчик callback — пагинация вакансий */
   public handleCallback = async (requestId: number, offset: number): Promise<JobSearchAgentResult> => {
     const vacancies = await JobVacancyEntity.find({
-      where: { requestId },
+      where: { request: { id: requestId } },
       order: { matchScore: 'DESC' },
       take: 5,
       skip: offset,
@@ -127,7 +131,7 @@ export class JobSearchAgentService {
       return { responseText: 'Больше вакансий нет.' };
     }
 
-    const total = await JobVacancyEntity.count({ where: { requestId } });
+    const total = await JobVacancyEntity.count({ where: { request: { id: requestId } } });
     const page = vacancies.map((vacancy, index) => this.formatVacancyItem(offset + index + 1, {
       id: vacancy.hhVacancyId ?? '',
       name: vacancy.title,
@@ -136,7 +140,7 @@ export class JobSearchAgentService {
       area: vacancy.location ?? '',
       url: vacancy.url ?? '',
       snippet: vacancy.descriptionSnippet ?? '',
-      published_at: '',
+      publishedAt: '',
       matchScore: vacancy.matchScore ?? 0,
       matchReason: vacancy.matchReason ?? '',
     })).join('\n\n');
@@ -258,8 +262,8 @@ export class JobSearchAgentService {
     try {
       for (const vacancy of vacancies) {
         const entity = new JobVacancyEntity();
-        entity.requestId = requestId;
-        entity.userId = userId;
+        entity.request = { id: requestId } as RequestEntity;
+        entity.user = { id: userId } as UserEntity;
         entity.hhVacancyId = vacancy.id;
         entity.title = vacancy.name.substring(0, 512);
         entity.companyName = vacancy.employer || null;
@@ -286,16 +290,16 @@ export class JobSearchAgentService {
 
         await entity.save();
       }
-    } catch (e) {
-      console.error(`[${this.TAG}] Failed to save vacancies:`, e);
+    } catch (error) {
+      this.loggerService.error(this.TAG, 'Failed to save vacancies', error);
     }
   };
 
   private logSearch = async (requestId: number, userId: number, query: string, area: number): Promise<void> => {
     try {
       const searchRecord = new SearchHistoryEntity();
-      searchRecord.requestId = requestId;
-      searchRecord.userId = userId;
+      searchRecord.request = { id: requestId } as RequestEntity;
+      searchRecord.user = { id: userId } as UserEntity;
       searchRecord.queryText = query;
       searchRecord.searchEngine = 'hh.ru';
       searchRecord.sourceUrl = `https://api.hh.ru/vacancies?text=${encodeURIComponent(query)}&area=${area}`;
@@ -350,21 +354,4 @@ export class JobSearchAgentService {
     return 'не указана';
   };
 
-  private saveHistory = async (telegramId: string, userId: number, requestId: number, question: string, answer: string): Promise<void> => {
-    try {
-      for (const [role, content, agentName] of [
-        ['user', question, 'job_search_agent'] as const,
-        ['assistant', answer, 'job_search_agent'] as const,
-      ]) {
-        const historyEntry = new ConversationHistoryEntity();
-        historyEntry.telegramId = telegramId;
-        historyEntry.userId = userId;
-        historyEntry.requestId = requestId;
-        historyEntry.role = role;
-        historyEntry.content = content;
-        historyEntry.agentName = agentName;
-        await historyEntry.save();
-      }
-    } catch { /* non-critical */ }
-  };
 }

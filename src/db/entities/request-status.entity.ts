@@ -22,12 +22,6 @@ export class RequestStatusEntity extends BaseEntity {
   })
   public request: RequestEntity;
 
-  /** FK — id запроса */
-  @Column('integer', {
-    name: 'request_id',
-  })
-  public requestId: number;
-
   /** Статус запроса (pending / processing / delegated / completed / failed) */
   @Column('character varying')
   public status: RequestStatus;
@@ -47,8 +41,7 @@ export class RequestStatusEntity extends BaseEntity {
 
   /** Дата создания записи */
   @CreateDateColumn({
-    name: 'created_at',
     type: 'timestamp with time zone',
   })
-  public createdAt: Date;
+  public created: Date;
 }

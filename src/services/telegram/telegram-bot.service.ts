@@ -34,13 +34,14 @@ export class TelegramBotService {
         { command: 'start', description: '🔃 Запуск бота' },
         { command: 'resume', description: '📄 Загрузить резюме' },
         { command: 'model', description: '🤖 Выбрать модель ИИ' },
+        { command: 'reminders', description: '🔔 Напоминания' },
         { command: 'stop', description: '⛔ Остановить текущий поиск' },
         { command: 'help', description: '❓ Помощь' },
       ]);
 
       this.loggerService.info(this.TAG, 'Telegram bot initialized');
-    } catch (e) {
-      this.loggerService.error(this.TAG, e);
+    } catch (error) {
+      this.loggerService.error(this.TAG, error);
     }
   };
 
@@ -57,9 +58,9 @@ export class TelegramBotService {
         parse_mode: 'HTML',
         ...options,
       });
-    } catch (e) {
-      this.loggerService.error(this.TAG, `Ошибка отправки сообщения на telegramId ${telegramId}`, e);
-      throw e;
+    } catch (error) {
+      this.loggerService.error(this.TAG, `Ошибка отправки сообщения на telegramId ${telegramId}`, error);
+      throw error;
     }
   };
 
@@ -82,9 +83,9 @@ export class TelegramBotService {
         return this.getBot().telegram.sendPhoto(telegramId, inputFile, { parse_mode: 'HTML' });
       }
       return this.getBot().telegram.sendDocument(telegramId, inputFile, { parse_mode: 'HTML' });
-    } catch (e) {
-      this.loggerService.error(this.TAG, `Ошибка отправки файла на telegramId ${telegramId}`, e);
-      throw e;
+    } catch (error) {
+      this.loggerService.error(this.TAG, `Ошибка отправки файла на telegramId ${telegramId}`, error);
+      throw error;
     }
   };
 }

@@ -1,16 +1,17 @@
 import { Container, Singleton } from 'typescript-ioc';
 import { StateGraph, MessagesAnnotation, END } from '@langchain/langgraph';
-import { SystemMessage, HumanMessage, ToolMessage } from '@langchain/core/messages';
+import { SystemMessage, HumanMessage, ToolMessage, AIMessage } from '@langchain/core/messages';
 import { DynamicStructuredTool, type StructuredToolInterface } from '@langchain/core/tools';
 import { z } from 'zod';
 
+import { BaseAgentService } from '@/services/agents/base-agent.service';
 import { ModelService } from '@/services/model/model.service';
 import { PlaywrightTool, type PageAction } from '@/services/tools/playwright.tool';
 import { YandexSearchTool } from '@/services/tools/yandex-search.tool';
+import { RequestEntity } from '@/db/entities/request.entity';
 import { WebResearchLogEntity } from '@/db/entities/web-research-log.entity';
 import { SearchHistoryEntity } from '@/db/entities/search-history.entity';
-import { ConversationHistoryEntity } from '@/db/entities/conversation-history.entity';
-import { LoggerService } from '@/services/app/logger.service';
+import { UserEntity } from '@/db/entities/user.entity';
 
 const MAX_ITERATIONS = 30;
 const TIMEOUT_MS = 10 * 60 * 1000; // 10 минут
@@ -25,10 +26,10 @@ export interface ToursHotelsAgentInput {
 }
 
 @Singleton
-export class ToursHotelsAgentService {
-  private readonly TAG = 'ToursHotelsAgentService';
+export class ToursHotelsAgentService extends BaseAgentService {
+  protected readonly TAG = 'ToursHotelsAgentService';
 
-  private readonly loggerService = Container.get(LoggerService);
+  protected readonly AGENT_NAME = 'tours_hotels_agent';
 
   private readonly modelService = Container.get(ModelService);
 
@@ -40,8 +41,8 @@ export class ToursHotelsAgentService {
     const { telegramId, userId, requestId, messageText, modelId } = input;
 
     const log = new WebResearchLogEntity();
-    log.requestId = requestId;
-    log.userId = userId;
+    log.request = { id: requestId } as RequestEntity;
+    log.user = { id: userId } as UserEntity;
     log.goal = messageText;
     log.iterations = 0;
     log.pagesFetched = 0;
@@ -51,13 +52,13 @@ export class ToursHotelsAgentService {
 
     let result: string;
     try {
-      const timeout = new Promise<string>((_, reject) =>
+      const timeout = new Promise<string>((_resolve, reject) =>
         setTimeout(() => reject(new Error('Timeout')), TIMEOUT_MS),
       );
       result = await Promise.race([this.runGraph(messageText, log, modelId), timeout]);
-    } catch (e) {
-      const isTimeout = e instanceof Error && e.message === 'Timeout';
-      this.loggerService.error(this.TAG, isTimeout ? 'Agent timeout (10min)' : 'Agent loop failed:', e);
+    } catch (error) {
+      const isTimeout = error instanceof Error && error.message === 'Timeout';
+      this.loggerService.error(this.TAG, isTimeout ? 'Agent timeout (10min)' : 'Agent loop failed:', error);
       result = isTimeout
         ? 'Поиск занял слишком много времени. Попробуйте уточнить запрос.'
         : 'Произошла ошибка при поиске. Попробуйте позже.';
@@ -86,27 +87,27 @@ export class ToursHotelsAgentService {
 
     if (result.filters.length > 0) {
       parts.push('\n=== ФИЛЬТРЫ/СОРТИРОВКА ===');
-      for (const f of result.filters) {
-        const opts = f.options?.length ? ` [${f.options.slice(0, 6).join(' | ')}]` : '';
-        parts.push(`• [${f.type}] ${f.label}${opts} → selector: ${f.selector}`);
+      for (const filterItem of result.filters) {
+        const filterOptionsText = filterItem.options?.length ? ` [${filterItem.options.slice(0, 6).join(' | ')}]` : '';
+        parts.push(`• [${filterItem.type}] ${filterItem.label}${filterOptionsText} → selector: ${filterItem.selector}`);
       }
     }
 
     if (result.pagination.length > 0) {
       parts.push('\n=== ПАГИНАЦИЯ ===');
-      for (const p of result.pagination) {
-        parts.push(`• "${p.text}"${p.href ? ` → ${p.href}` : ''}${p.selector ? ` selector: ${p.selector}` : ''}`);
+      for (const paginationItem of result.pagination) {
+        parts.push(`• "${paginationItem.text}"${paginationItem.href ? ` → ${paginationItem.href}` : ''}${paginationItem.selector ? ` selector: ${paginationItem.selector}` : ''}`);
       }
     }
 
     if (result.buttons.length > 0) {
       parts.push('\n=== КНОПКИ ===');
-      parts.push(result.buttons.map((b) => `• "${b.text}" selector: ${b.selector}`).join('\n'));
+      parts.push(result.buttons.map((button) => `• "${button.text}" selector: ${button.selector}`).join('\n'));
     }
 
     if (result.links.length > 0) {
       parts.push('\n=== ССЫЛКИ ===');
-      parts.push(result.links.map((l) => `${l.text}: ${l.href}`).join('\n'));
+      parts.push(result.links.map((link) => `${link.text}: ${link.href}`).join('\n'));
     }
 
     return parts.join('\n').substring(0, 12000);
@@ -153,19 +154,19 @@ export class ToursHotelsAgentService {
           await log.save();
 
           // Нормализуем плоские action-объекты в типизированные PageAction
-          const pageActions: PageAction[] = (actions ?? []).map((a) => {
-            switch (a.type) {
-            case 'click_text': return { type: 'click_text', value: a.text ?? a.value ?? '' };
-            case 'click_selector': return { type: 'click_selector', selector: a.selector ?? '' };
-            case 'click_coords': return { type: 'click_coords', x: a.x ?? 0, y: a.y ?? 0 };
-            case 'fill_placeholder': return { type: 'fill_placeholder', placeholder: a.placeholder ?? a.text ?? '', value: a.value ?? '' };
-            case 'fill_selector': return { type: 'fill_selector', selector: a.selector ?? '', value: a.value ?? '' };
-            case 'select_option': return { type: 'select_option', selector: a.selector ?? '', value: a.value ?? '' };
-            case 'hover': return { type: 'hover', selector: a.selector ?? '' };
+          const pageActions: PageAction[] = (actions ?? []).map((rawAction) => {
+            switch (rawAction.type) {
+            case 'click_text': return { type: 'click_text', value: rawAction.text ?? rawAction.value ?? '' };
+            case 'click_selector': return { type: 'click_selector', selector: rawAction.selector ?? '' };
+            case 'click_coords': return { type: 'click_coords', x: rawAction.x ?? 0, y: rawAction.y ?? 0 };
+            case 'fill_placeholder': return { type: 'fill_placeholder', placeholder: rawAction.placeholder ?? rawAction.text ?? '', value: rawAction.value ?? '' };
+            case 'fill_selector': return { type: 'fill_selector', selector: rawAction.selector ?? '', value: rawAction.value ?? '' };
+            case 'select_option': return { type: 'select_option', selector: rawAction.selector ?? '', value: rawAction.value ?? '' };
+            case 'hover': return { type: 'hover', selector: rawAction.selector ?? '' };
             case 'scroll_bottom': return { type: 'scroll_bottom' };
             case 'scroll_top': return { type: 'scroll_top' };
-            case 'scroll_px': return { type: 'scroll_px', px: a.px ?? 500 };
-            case 'wait': return { type: 'wait', ms: a.ms ?? 1000 };
+            case 'scroll_px': return { type: 'scroll_px', px: rawAction.px ?? 500 };
+            case 'wait': return { type: 'wait', ms: rawAction.ms ?? 1000 };
             default: return { type: 'scroll_bottom' };
             }
           });
@@ -178,8 +179,8 @@ export class ToursHotelsAgentService {
 
           latestScreenshot = result.screenshot;
           return this.formatPageResult(url, result);
-        } catch (e) {
-          return `Ошибка при открытии страницы ${url}: ${e instanceof Error ? e.message : String(e)}`;
+        } catch (error) {
+          return `Ошибка при открытии страницы ${url}: ${error instanceof Error ? error.message : String(error)}`;
         }
       },
     });
@@ -199,13 +200,13 @@ export class ToursHotelsAgentService {
           // Yandex Search API (с кэшированием)
           const apiResults = await this.yandexSearchTool.search(query, 10).catch(() => []);
           if (apiResults.length > 0) {
-            const lines = apiResults.map((r) => `${r.title}\n${r.url}\n${r.snippet}`).join('\n\n');
+            const lines = apiResults.map((searchResult) => `${searchResult.title}\n${searchResult.url}\n${searchResult.snippet}`).join('\n\n');
             return `Результаты поиска по запросу «${query}»:\n\n${lines}`;
           }
 
           return `Поиск по запросу «${query}» не дал результатов. Попробуй открыть целевой сайт напрямую через browse_page.`;
-        } catch (e) {
-          return `Ошибка поиска: ${e instanceof Error ? e.message : String(e)}`;
+        } catch (error) {
+          return `Ошибка поиска: ${error instanceof Error ? error.message : String(error)}`;
         }
       },
     });
@@ -290,30 +291,30 @@ export class ToursHotelsAgentService {
 
     const shouldContinue = (state: typeof MessagesAnnotation.State) => {
       const lastMessage = state.messages[state.messages.length - 1];
-      if ('tool_calls' in lastMessage && Array.isArray((lastMessage as any).tool_calls) && (lastMessage as any).tool_calls.length > 0) {
+      if (lastMessage instanceof AIMessage && Array.isArray(lastMessage.tool_calls) && lastMessage.tool_calls.length) {
         return 'tools';
       }
       return END;
     };
 
     const toolsNode = async (state: typeof MessagesAnnotation.State) => {
-      const lastMessage = state.messages[state.messages.length - 1] as any;
+      const lastMessage = state.messages[state.messages.length - 1] as AIMessage;
       const outMessages: (ToolMessage | HumanMessage)[] = [];
 
       for (const toolCall of lastMessage.tool_calls ?? []) {
-        const tool = tools.find((t) => t.name === toolCall.name);
+        const registeredTool = tools.find((candidateTool) => candidateTool.name === toolCall.name);
 
-        if (!tool) {
-          outMessages.push(new ToolMessage({ content: `Инструмент ${toolCall.name} не найден.`, tool_call_id: toolCall.id }));
+        if (!registeredTool) {
+          outMessages.push(new ToolMessage({ content: `Инструмент ${toolCall.name} не найден.`, tool_call_id: toolCall.id ?? '' }));
           continue;
         }
 
-        const textResult = String(await tool.invoke(toolCall.args));
+        const textResult = String(await registeredTool.invoke(toolCall.args));
         const screenshot = toolCall.name === 'browse_page' ? latestScreenshot : null;
         latestScreenshot = null;
 
         // ToolMessage содержит только текст (image_url в role:tool не поддерживается OpenAI-форматом)
-        outMessages.push(new ToolMessage({ content: textResult, tool_call_id: toolCall.id }));
+        outMessages.push(new ToolMessage({ content: textResult, tool_call_id: toolCall.id ?? '' }));
 
         if (screenshot) {
           // Скриншот передаём отдельным HumanMessage — только так vision-модели его видят
@@ -360,12 +361,17 @@ export class ToursHotelsAgentService {
         .replace(/(\*\s*(Wait|Let['']s go|Step|Action|Thought|Note)\s*\*\s*[:：]?[^\n]*\n?)+/gi, '') // *Wait*: ... *Let's go*
         .trim();
 
+    interface ContentTextBlock {
+      type: string;
+      text?: string;
+    }
+
     if (typeof content === 'string') {
       return stripThinking(content) || 'Поиск завершён.';
     }
     if (Array.isArray(content)) {
-      const textPart = content.find((part: any) => part.type === 'text');
-      return stripThinking((textPart as any)?.text ?? '') || 'Поиск завершён.';
+      const textBlock = (content as ContentTextBlock[]).find((block) => block.type === 'text');
+      return stripThinking(textBlock?.text ?? '') || 'Поиск завершён.';
     }
 
     return `Достигнут лимит ${MAX_ITERATIONS} шагов. Поиск не завершён. Попробуйте уточнить запрос.`;
@@ -374,8 +380,8 @@ export class ToursHotelsAgentService {
   private logSearch = async (requestId: number, userId: number, query: string): Promise<void> => {
     try {
       const searchRecord = new SearchHistoryEntity();
-      searchRecord.requestId = requestId;
-      searchRecord.userId = userId;
+      searchRecord.request = { id: requestId } as RequestEntity;
+      searchRecord.user = { id: userId } as UserEntity;
       searchRecord.queryText = query;
       searchRecord.searchEngine = 'web';
       searchRecord.agentName = 'tours_hotels_agent';
@@ -383,18 +389,4 @@ export class ToursHotelsAgentService {
     } catch { /* non-critical */ }
   };
 
-  private saveHistory = async (telegramId: string, userId: number, requestId: number, question: string, answer: string): Promise<void> => {
-    try {
-      for (const [role, content] of [['user', question], ['assistant', answer]] as const) {
-        const historyEntry = new ConversationHistoryEntity();
-        historyEntry.telegramId = telegramId;
-        historyEntry.userId = userId;
-        historyEntry.requestId = requestId;
-        historyEntry.role = role;
-        historyEntry.content = content;
-        historyEntry.agentName = 'tours_hotels_agent';
-        await historyEntry.save();
-      }
-    } catch { /* non-critical */ }
-  };
 }

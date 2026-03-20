@@ -1,6 +1,7 @@
 import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, ManyToOne, JoinColumn, BaseEntity } from 'typeorm';
 
 import { RequestEntity } from '@/db/entities/request.entity';
+import { UserEntity } from '@/db/entities/user.entity';
 
 /** Лог ошибок, возникших при обработке запросов */
 @Entity({
@@ -28,12 +29,15 @@ export class ErrorLogEntity extends BaseEntity {
   })
   public requestId: number | null;
 
-  /** Telegram id пользователя, связанного с ошибкой */
-  @Column('bigint', {
-    name: 'user_telegram_id',
+  /** Пользователь, связанный с ошибкой */
+  @ManyToOne(() => UserEntity, {
     nullable: true,
+    onDelete: 'SET NULL',
   })
-  public userTelegramId: string | null;
+  @JoinColumn({
+    name: 'user_id',
+  })
+  public user: UserEntity | null;
 
   /** Название сервиса, в котором произошла ошибка */
   @Column('character varying', {
@@ -78,8 +82,7 @@ export class ErrorLogEntity extends BaseEntity {
 
   /** Дата создания записи */
   @CreateDateColumn({
-    name: 'created_at',
     type: 'timestamp with time zone',
   })
-  public createdAt: Date;
+  public created: Date;
 }

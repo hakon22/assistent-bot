@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import { RequestEntity, type MediaType } from '@/db/entities/request.entity';
 import { RequestStatusEntity, type RequestStatus } from '@/db/entities/request-status.entity';
 import { FileAttachmentEntity } from '@/db/entities/file-attachment.entity';
+import { UserEntity } from '@/db/entities/user.entity';
 
 export interface CreateRequestInput {
   userId: number;
@@ -30,7 +31,7 @@ export class RequestService {
   public create = async (input: CreateRequestInput): Promise<RequestEntity> => {
     const request = new RequestEntity();
     request.requestUuid = randomUUID();
-    request.userId = input.userId;
+    request.user = { id: input.userId } as UserEntity;
     request.telegramMessageId = input.telegramMessageId ?? null;
     request.telegramChatId = input.telegramChatId ?? null;
     request.rawText = input.rawText ?? null;
@@ -44,7 +45,7 @@ export class RequestService {
   /** Add a status transition */
   public addStatus = async (requestId: number, status: RequestStatus, agentName?: string | null, notes?: string): Promise<void> => {
     const requestStatus = new RequestStatusEntity();
-    requestStatus.requestId = requestId;
+    requestStatus.request = { id: requestId } as RequestEntity;
     requestStatus.status = status;
     requestStatus.agentName = agentName ?? null;
     requestStatus.notes = notes ?? null;
@@ -80,8 +81,8 @@ export class RequestService {
   /** Save file attachment and return its ID */
   public saveFileAttachment = async (input: FileAttachmentInput, requestId?: number): Promise<FileAttachmentEntity> => {
     const fileAttachment = new FileAttachmentEntity();
-    fileAttachment.userId = input.userId;
-    fileAttachment.requestId = requestId ?? null;
+    fileAttachment.user = { id: input.userId } as UserEntity;
+    fileAttachment.request = requestId ? { id: requestId } as RequestEntity : null;
     fileAttachment.telegramFileId = input.telegramFileId;
     fileAttachment.fileType = input.fileType ?? null;
     fileAttachment.mimeType = input.mimeType ?? null;
@@ -94,6 +95,10 @@ export class RequestService {
 
   /** Link existing attachment to request */
   public linkAttachmentToRequest = async (attachmentId: number, requestId: number): Promise<void> => {
-    await FileAttachmentEntity.update({ id: attachmentId }, { requestId });
+    const attachment = await FileAttachmentEntity.findOne({ where: { id: attachmentId } });
+    if (attachment) {
+      attachment.request = { id: requestId } as RequestEntity;
+      await attachment.save();
+    }
   };
 }

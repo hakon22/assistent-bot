@@ -1,7 +1,16 @@
 import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn, BaseEntity } from 'typeorm';
 
-export type UserRole = 'user' | 'admin' | 'operator';
-export type UserStatus = 'active' | 'banned' | 'inactive';
+export enum UserRoleEnum {
+  USER = 'USER',
+  ADMIN = 'ADMIN',
+  OPERATOR = 'OPERATOR',
+}
+
+export enum UserStatusEnum {
+  ACTIVE = 'ACTIVE',
+  BANNED = 'BANNED',
+  INACTIVE = 'INACTIVE',
+}
 
 /** Пользователь Telegram-бота */
 @Entity({
@@ -14,17 +23,15 @@ export class UserEntity extends BaseEntity {
 
   /** Дата создания записи */
   @CreateDateColumn({
-    name: 'created_at',
     type: 'timestamp with time zone',
   })
-  public createdAt: Date;
+  public created: Date;
 
   /** Дата последнего изменения записи */
   @UpdateDateColumn({
-    name: 'updated_at',
     type: 'timestamp with time zone',
   })
-  public updatedAt: Date;
+  public updated: Date;
 
   /** Telegram id пользователя (обязателен, уникален) */
   @Column('bigint', {
@@ -60,17 +67,21 @@ export class UserEntity extends BaseEntity {
   })
   public lastName: string | null;
 
-  /** Роль пользователя (user / admin / operator) */
-  @Column('character varying', {
-    default: 'user',
+  /** Роль пользователя */
+  @Column('enum', {
+    enum: UserRoleEnum,
+    enumName: 'user_role_enum',
+    default: UserRoleEnum.USER,
   })
-  public role: UserRole;
+  public role: UserRoleEnum;
 
-  /** Статус пользователя (active / banned / inactive) */
-  @Column('character varying', {
-    default: 'active',
+  /** Статус пользователя */
+  @Column('enum', {
+    enum: UserStatusEnum,
+    enumName: 'user_status_enum',
+    default: UserStatusEnum.ACTIVE,
   })
-  public status: UserStatus;
+  public status: UserStatusEnum;
 
   /** Текст резюме пользователя */
   @Column('text', {

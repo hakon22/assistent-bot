@@ -9,15 +9,16 @@ export abstract class BaseService {
 
   protected loggerService = Container.get(LoggerService);
 
-  protected errorHandler = (e: any, res: Response, statusCode = 500) => {
-    this.loggerService.error(e);
+  protected errorHandler = (error: unknown, res: Response, statusCode = 500) => {
+    this.loggerService.error(error);
 
-    let error = `${e?.name}: ${e?.message}`;
+    const typedError = error as { name?: string; message?: string; path?: string; };
+    let errorMessage = `${typedError?.name}: ${typedError?.message}`;
 
-    if (e?.name === 'ValidationError') {
-      error = `${e?.name}: "${e?.path}" ${e?.message}`;
+    if (typedError?.name === 'ValidationError') {
+      errorMessage = `${typedError?.name}: "${typedError?.path}" ${typedError?.message}`;
     }
 
-    res.status(statusCode).json({ error });
+    res.status(statusCode).json({ error: errorMessage });
   };
 }

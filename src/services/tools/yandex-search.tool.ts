@@ -2,6 +2,7 @@ import { Container, Singleton } from 'typescript-ioc';
 import axios from 'axios';
 
 import { SearchCacheService } from '@/services/search/search-cache.service';
+import { LoggerService } from '@/services/app/logger.service';
 
 export interface YandexSearchResult {
   title: string;
@@ -9,9 +10,40 @@ export interface YandexSearchResult {
   snippet: string;
 }
 
+interface YandexPassage {
+  '#text'?: string;
+}
+
+interface YandexDocument {
+  title?: string;
+  url?: string;
+  headline?: string;
+  passages?: {
+    passage?: (string | YandexPassage)[];
+  };
+}
+
+interface YandexGroup {
+  document?: YandexDocument[];
+}
+
+interface YandexOperationResponse {
+  done?: boolean;
+  error?: unknown;
+  response?: {
+    result?: {
+      grouping?: {
+        group?: YandexGroup[];
+      }[];
+    };
+  };
+}
+
 @Singleton
 export class YandexSearchTool {
   private readonly TAG = 'YandexSearchTool';
+
+  private readonly loggerService = Container.get(LoggerService);
 
   private readonly apiKey = process.env.YANDEX_SEARCH_API_KEY ?? '';
 
@@ -64,8 +96,8 @@ export class YandexSearchTool {
       const results = await this.pollOperation(operationId);
       await this.searchCacheService.set(query, results);
       return results.slice(0, limit);
-    } catch (e) {
-      console.error(`[${this.TAG}] Search error:`, e);
+    } catch (error) {
+      this.loggerService.error(this.TAG, 'Search error', error);
       return [];
     }
   };
@@ -76,37 +108,37 @@ export class YandexSearchTool {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       await this.sleep(2000);
 
-      const opResponse = await axios.get(operationUrl, {
+      const operationResponse = await axios.get(operationUrl, {
         headers: { Authorization: `Api-Key ${this.apiKey}` },
         timeout: 15000,
       });
 
-      const op = opResponse.data;
-      if (!op.done) {
+      const operation: YandexOperationResponse = operationResponse.data;
+      if (!operation.done) {
         continue;
       }
 
-      if (op.error) {
-        throw new Error(`Yandex Search operation failed: ${JSON.stringify(op.error)}`);
+      if (operation.error) {
+        throw new Error(`Yandex Search operation failed: ${JSON.stringify(operation.error)}`);
       }
 
-      return this.parseResults(op.response);
+      return this.parseResults(operation.response);
     }
 
     return [];
   };
 
-  private parseResults = (response: any): YandexSearchResult[] => {
+  private parseResults = (response: YandexOperationResponse['response']): YandexSearchResult[] => {
     try {
       const groups = response?.result?.grouping?.[0]?.group ?? [];
-      return groups.slice(0, 10).map((group: any) => {
-        const doc = group.document?.[0] ?? {};
-        const passages = doc.passages?.passage ?? [];
-        const snippet = passages.map((p: any) => (typeof p === 'string' ? p : p['#text'] ?? '')).join(' ').trim();
+      return groups.slice(0, 10).map((group) => {
+        const document = group.document?.[0] ?? {};
+        const passages = document.passages?.passage ?? [];
+        const snippet = passages.map((passage) => (typeof passage === 'string' ? passage : passage['#text'] ?? '')).join(' ').trim();
         return {
-          title: doc.title ?? '',
-          url: doc.url ?? '',
-          snippet: snippet || (doc.headline ?? ''),
+          title: document.title ?? '',
+          url: document.url ?? '',
+          snippet: snippet || (document.headline ?? ''),
         };
       });
     } catch {
@@ -114,5 +146,5 @@ export class YandexSearchTool {
     }
   };
 
-  private sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  private sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

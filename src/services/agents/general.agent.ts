@@ -1,10 +1,12 @@
 import { Container, Singleton } from 'typescript-ioc';
 import { SystemMessage, HumanMessage, AIMessage } from '@langchain/core/messages';
 
+import { BaseAgentService } from '@/services/agents/base-agent.service';
 import { ModelService } from '@/services/model/model.service';
 import { ConversationHistoryEntity } from '@/db/entities/conversation-history.entity';
+import { RequestEntity } from '@/db/entities/request.entity';
 import { SearchHistoryEntity } from '@/db/entities/search-history.entity';
-import { LoggerService } from '@/services/app/logger.service';
+import { UserEntity } from '@/db/entities/user.entity';
 
 export interface GeneralAgentInput {
   telegramId: string;
@@ -19,10 +21,10 @@ export interface GeneralAgentInput {
 }
 
 @Singleton
-export class GeneralAgentService {
-  private readonly TAG = 'GeneralAgentService';
+export class GeneralAgentService extends BaseAgentService {
+  protected readonly TAG = 'GeneralAgentService';
 
-  private readonly loggerService = Container.get(LoggerService);
+  protected readonly AGENT_NAME = 'general_agent';
 
   private readonly modelService = Container.get(ModelService);
 
@@ -31,8 +33,8 @@ export class GeneralAgentService {
 
     // Загружаем последние 10 сообщений из истории
     const history = await ConversationHistoryEntity.find({
-      where: { userId },
-      order: { createdAt: 'DESC' },
+      where: { user: { id: userId } },
+      order: { created: 'DESC' },
       take: 10,
     });
 
@@ -85,9 +87,9 @@ export class GeneralAgentService {
       answer = typeof response.content === 'string'
         ? response.content.trim()
         : JSON.stringify(response.content);
-    } catch (e) {
-      this.loggerService.error(this.TAG, 'LLM call failed:', e);
-      throw e;
+    } catch (error) {
+      this.loggerService.error(this.TAG, 'LLM call failed:', error);
+      throw error;
     }
 
     // Сохраняем в историю диалога
@@ -99,28 +101,11 @@ export class GeneralAgentService {
     return answer;
   };
 
-  private saveHistory = async (telegramId: string, userId: number, requestId: number, question: string, answer: string): Promise<void> => {
-    try {
-      for (const [role, content] of [['user', question], ['assistant', answer]] as const) {
-        const historyEntry = new ConversationHistoryEntity();
-        historyEntry.telegramId = telegramId;
-        historyEntry.userId = userId;
-        historyEntry.requestId = requestId;
-        historyEntry.role = role;
-        historyEntry.content = content;
-        historyEntry.agentName = 'general_agent';
-        await historyEntry.save();
-      }
-    } catch (e) {
-      this.loggerService.error(this.TAG, 'Failed to save history:', e);
-    }
-  };
-
   private logSearch = async (requestId: number, userId: number, query: string): Promise<void> => {
     try {
       const searchRecord = new SearchHistoryEntity();
-      searchRecord.requestId = requestId;
-      searchRecord.userId = userId;
+      searchRecord.request = { id: requestId } as RequestEntity;
+      searchRecord.user = { id: userId } as UserEntity;
       searchRecord.queryText = query;
       searchRecord.searchEngine = 'llm';
       searchRecord.agentName = 'general_agent';
