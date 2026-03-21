@@ -71,10 +71,10 @@ export class JobSearchAgentService extends BaseAgentService {
 
     // 2. Строим URL для hh.ru
     const area = this.resolveArea(intent.location);
-    const vacancies = await this.hhApiTool.searchVacancies(
+    const fetchedVacancies = await this.hhApiTool.searchVacancies(
       intent.hhQuery,
       area,
-      20,
+      50,
       intent.salaryMin ?? undefined,
       intent.experience ?? undefined,
       intent.schedule ?? undefined,
@@ -83,25 +83,58 @@ export class JobSearchAgentService extends BaseAgentService {
     // 3. Логируем поиск
     await this.logSearch(requestId, userId, intent.hhQuery, area);
 
-    if (!vacancies.length) {
+    if (!fetchedVacancies.length) {
       return {
         responseText: `По запросу «${intent.hhQuery}» вакансий за последние 7 дней не найдено. Попробуйте другой запрос.`,
       };
     }
 
-    // 4. Скоринг через LLM
-    const scored = await this.scoreVacancies(vacancies, effectiveResume, modelId);
+    // 4. Фильтруем уже просмотренные вакансии
+    const viewedIds = await this.loadViewedVacancyIds(userId);
+    const unseenVacancies = fetchedVacancies.filter(({ id }) => !viewedIds.has(id));
 
-    // 5. Сохраняем в БД
-    await this.saveVacancies(scored, requestId, userId);
+    this.loggerService.info(this.TAG, 'Filtered unseen vacancies', {
+      userId,
+      total: fetchedVacancies.length,
+      unseen: unseenVacancies.length,
+      filtered: fetchedVacancies.length - unseenVacancies.length,
+    });
 
-    // 6. Формируем ответ (первые 5, с пагинацией)
+    if (!unseenVacancies.length) {
+      return {
+        responseText: `По запросу «${intent.hhQuery}» все найденные вакансии вы уже просматривали. Попробуйте изменить параметры поиска.`,
+      };
+    }
+
+    // 5. Скоринг через LLM
+    const allScored = await this.scoreVacancies(unseenVacancies, effectiveResume, modelId);
+    const scored = allScored.filter(({ matchScore }) => matchScore >= 50);
+
+    this.loggerService.info(this.TAG, 'Filtered by match score', {
+      userId,
+      beforeFilter: allScored.length,
+      afterFilter: scored.length,
+    });
+
+    if (!scored.length) {
+      return {
+        responseText: `По запросу «${intent.hhQuery}» не нашлось вакансий с достаточным совпадением по резюме (минимум 50%). Попробуйте другой запрос.`,
+      };
+    }
+
+    // 6. Сохраняем в БД
+    const savedVacancies = await this.saveVacancies(scored, requestId, userId);
+
+    // 7. Помечаем первую страницу просмотренной
+    await this.markVacanciesAsViewed(savedVacancies.slice(0, 5));
+
+    // 8. Формируем ответ (первые 5, с пагинацией)
     const page0 = scored.slice(0, 5);
     const hasMore = scored.length > 5;
 
     const responseText = await this.formatResponse(page0, intent.hhQuery, scored.length, effectiveResume, modelId);
 
-    // 7. Inline keyboard для пагинации
+    // 9. Inline keyboard для пагинации
     let inlineKeyboard: string | null = null;
     if (hasMore) {
       inlineKeyboard = JSON.stringify({
@@ -112,7 +145,7 @@ export class JobSearchAgentService extends BaseAgentService {
       });
     }
 
-    // 8. Сохраняем в историю
+    // 10. Сохраняем в историю
     await this.saveHistory(telegramId, userId, requestId, messageText, responseText);
 
     return { responseText, inlineKeyboard };
@@ -130,6 +163,8 @@ export class JobSearchAgentService extends BaseAgentService {
     if (!vacancies.length) {
       return { responseText: 'Больше вакансий нет.' };
     }
+
+    await this.markVacanciesAsViewed(vacancies);
 
     const total = await JobVacancyEntity.count({ where: { request: { id: requestId } } });
     const page = vacancies.map((vacancy, index) => this.formatVacancyItem(offset + index + 1, {
@@ -258,7 +293,8 @@ export class JobSearchAgentService extends BaseAgentService {
     vacancies: (HhVacancy & { matchScore: number; matchReason: string; })[],
     requestId: number,
     userId: number,
-  ): Promise<void> => {
+  ): Promise<JobVacancyEntity[]> => {
+    const saved: JobVacancyEntity[] = [];
     try {
       for (const vacancy of vacancies) {
         const entity = new JobVacancyEntity();
@@ -289,9 +325,37 @@ export class JobSearchAgentService extends BaseAgentService {
         }
 
         await entity.save();
+        saved.push(entity);
       }
     } catch (error) {
       this.loggerService.error(this.TAG, 'Failed to save vacancies', error);
+    }
+    return saved;
+  };
+
+  private loadViewedVacancyIds = async (userId: number): Promise<Set<string>> => {
+    try {
+      const viewed = await JobVacancyEntity.find({
+        select: { hhVacancyId: true },
+        where: { user: { id: userId }, isViewed: true },
+      });
+      return new Set(viewed.map(({ hhVacancyId }) => hhVacancyId).filter(Boolean) as string[]);
+    } catch (error) {
+      this.loggerService.error(this.TAG, 'Failed to load viewed vacancy ids', error);
+      return new Set();
+    }
+  };
+
+  private markVacanciesAsViewed = async (vacancies: JobVacancyEntity[]): Promise<void> => {
+    if (!vacancies.length) return;
+    try {
+      for (const vacancy of vacancies) {
+        vacancy.isViewed = true;
+        await vacancy.save();
+      }
+      this.loggerService.info(this.TAG, 'Marked vacancies as viewed', { count: vacancies.length });
+    } catch (error) {
+      this.loggerService.error(this.TAG, 'Failed to mark vacancies as viewed', error);
     }
   };
 

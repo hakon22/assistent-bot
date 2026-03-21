@@ -127,6 +127,13 @@ export class JobVacancyEntity extends BaseEntity {
   })
   public matchReason: string | null;
 
+  /** Флаг: вакансия была показана пользователю */
+  @Column('boolean', {
+    name: 'is_viewed',
+    default: false,
+  })
+  public isViewed: boolean;
+
   /** Флаг: вакансия сохранена пользователем */
   @Column('boolean', {
     name: 'is_saved',
