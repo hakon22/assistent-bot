@@ -11,7 +11,7 @@ Then create `src/services/tools/<kebab-name>.tool.ts` following this structure:
 
 ```typescript
 import { Singleton, Container } from 'typescript-ioc';
-import { isEmpty, isNil } from 'lodash';
+import { isEmpty, isNil } from 'lodash-es';
 import { BaseService } from '@services/app/base.service';
 import { ErrorLogService } from '@services/error/error-log.service';
 

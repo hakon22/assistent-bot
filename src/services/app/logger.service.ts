@@ -5,7 +5,7 @@ import DailyRotateFile from 'winston-daily-rotate-file';
 
 @Singleton
 export class LoggerService {
-  private readonly logDir = '/srv/logs';
+  private readonly logDir = process.env.NODE_ENV === 'production' ? '/srv/logs' : './logs';
 
   private readonly appName = process.env.APP_NAME ?? 'assistent-bot';
 
@@ -35,27 +35,31 @@ export class LoggerService {
 
   constructor() {
     this.colorizer.addColors(this.colors);
+    const fileTransports = [
+      new DailyRotateFile({
+        dirname: this.logDir,
+        filename: `${this.appName}-%DATE%.log`,
+        datePattern: 'YYYY-MM-DD',
+        zippedArchive: true,
+        maxSize: '20m',
+        maxFiles: '14d',
+        level: 'debug',
+      }),
+      new DailyRotateFile({
+        dirname: this.logDir,
+        filename: `${this.appName}-error-%DATE%.log`,
+        datePattern: 'YYYY-MM-DD',
+        zippedArchive: true,
+        maxSize: '20m',
+        maxFiles: '14d',
+        level: 'error',
+      }),
+    ];
+
     this.transports = process.env.DB === 'LOCAL' || process.env.CRON || process.env.NODE_ENV !== 'production'
-      ? [new winston.transports.Console()]
+      ? [new winston.transports.Console(), ...fileTransports]
       : [
-        new DailyRotateFile({
-          dirname: this.logDir,
-          filename: `${this.appName}-%DATE%.log`,
-          datePattern: 'YYYY-MM-DD',
-          zippedArchive: true,
-          maxSize: '20m',
-          maxFiles: '14d',
-          level: 'debug',
-        }),
-        new DailyRotateFile({
-          dirname: this.logDir,
-          filename: `${this.appName}-error-%DATE%.log`,
-          datePattern: 'YYYY-MM-DD',
-          zippedArchive: true,
-          maxSize: '20m',
-          maxFiles: '14d',
-          level: 'error',
-        }),
+        ...fileTransports,
       ];
 
     this.logger = winston.createLogger({

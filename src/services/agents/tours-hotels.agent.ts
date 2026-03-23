@@ -40,6 +40,8 @@ export class ToursHotelsAgentService extends BaseAgentService {
   public process = async (input: ToursHotelsAgentInput): Promise<string> => {
     const { telegramId, userId, requestId, messageText, modelId } = input;
 
+    this.loggerService.info(this.TAG, 'Tours/hotels agent started', { requestId, messageText });
+
     const log = new WebResearchLogEntity();
     log.request = { id: requestId } as RequestEntity;
     log.user = { id: userId } as UserEntity;
@@ -69,6 +71,8 @@ export class ToursHotelsAgentService extends BaseAgentService {
 
     await this.logSearch(requestId, userId, messageText);
     await this.saveHistory(telegramId, userId, requestId, messageText, result);
+
+    this.loggerService.info(this.TAG, 'Tours/hotels agent completed', { requestId, iterations: log.iterations, pagesFetched: log.pagesFetched });
 
     return result;
   };
@@ -143,8 +147,8 @@ export class ToursHotelsAgentService extends BaseAgentService {
           value: z.string().optional().describe('Для fill_* и select_option: вводимое значение или текст опции'),
           x: z.number().optional().describe('Для click_coords: координата X на скриншоте'),
           y: z.number().optional().describe('Для click_coords: координата Y на скриншоте'),
-          px: z.number().optional().describe('Для scroll_px: количество пикселей'),
-          ms: z.number().optional().describe('Для wait: миллисекунды'),
+          pixels: z.number().optional().describe('Для scroll_px: количество пикселей'),
+          milliseconds: z.number().optional().describe('Для wait: миллисекунды'),
         })).optional().describe('Действия после загрузки страницы'),
       }),
       func: async ({ url, auto_scroll, actions }) => {
@@ -165,8 +169,8 @@ export class ToursHotelsAgentService extends BaseAgentService {
             case 'hover': return { type: 'hover', selector: rawAction.selector ?? '' };
             case 'scroll_bottom': return { type: 'scroll_bottom' };
             case 'scroll_top': return { type: 'scroll_top' };
-            case 'scroll_px': return { type: 'scroll_px', px: rawAction.px ?? 500 };
-            case 'wait': return { type: 'wait', ms: rawAction.ms ?? 1000 };
+            case 'scroll_px': return { type: 'scroll_px', pixels: rawAction.pixels ?? 500 };
+            case 'wait': return { type: 'wait', milliseconds: rawAction.milliseconds ?? 1000 };
             default: return { type: 'scroll_bottom' };
             }
           });
@@ -214,72 +218,63 @@ export class ToursHotelsAgentService extends BaseAgentService {
     const tools: StructuredToolInterface[] = [browsePageTool, searchWebTool];
 
     const systemPrompt = [
-      'Ты визуальный веб-агент. После каждого вызова browse_page ты получаешь СКРИНШОТ страницы — смотри на него и принимай решения как человек.',
-      `Текущая дата: ${new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}.`,
+      `Ты веб-агент для поиска туров, отелей и услуг. Текущая дата: ${new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}.`,
       '',
-      '## ФОРМАТ ОТВЕТА',
-      'Итоговый ответ пиши в формате HTML для Telegram. Только эти теги:',
-      '  <b>жирный</b>  — для названий товаров, цен, заголовков',
-      '  <a href="URL">текст</a>  — для ссылок (НЕ используй markdown [текст](url))',
-      '  <i>курсив</i>  — для второстепенной информации',
-      'Не используй: ** ... ** , [ ]( ) , # заголовки, --- разделители.',
+      '## ИНСТРУМЕНТЫ',
       '',
-      '## ГЛАВНАЯ ЦЕЛЬ',
-      'Найти ПРЯМЫЕ ссылки на конкретные товары/отели/услуги.',
-      'Ссылка на страницу поиска или каталога — НЕ является результатом.',
+      '### browse_page — реальный браузер Chromium',
+      'Использует прокси и полный обход антибот-защит. Открывает страницу, выполняет клики/скролл/ввод.',
+      'Возвращает текст страницы, кнопки, ссылки, фильтры и скриншот.',
+      'Применяй для любой страницы — чтения, кликов по фильтрам, пагинации, заполнения форм.',
+      'После каждого вызова получаешь скриншот 1280×900px — анализируй его для следующего действия.',
       '',
-      '## ЧТО СЧИТАЕТСЯ ПРАВИЛЬНОЙ ССЫЛКОЙ',
-      '✅ ПРАВИЛЬНО — прямая ссылка на конкретный отель/товар:',
-      '   https://ostrovok.ru/hotel/russia/gelendzhik/mid9141845/hotel_oscar_gelendzhik/',
-      '   https://amchokers.ru/product/kristalnyj-ruchej',
-      '❌ НЕПРАВИЛЬНО — страница поиска, каталога, общего раздела:',
-      '   https://ostrovok.ru/hotel/russia/gelendzhik/?dates=05.04.2026',
-      '   https://amchokers.ru/catalog/',
+      '### search_web — поиск через Яндекс',
+      'Применяй для нахождения URL нужных сайтов и страниц.',
       '',
-      '## ПРАВИЛА',
-      '1. URL — ТОЛЬКО из результатов browse_page или search_web в этом диалоге. НИКОГДА не придумывай URL из памяти или тренировочных данных.',
-      '   Ты не знаешь реальных URL товаров на mvideo.ru, wildberries.ru и других сайтах — не угадывай.',
-      '   Если URL не появился в секции ССЫЛКИ одного из вызовов инструментов — его НЕ СУЩЕСТВУЕТ для тебя.',
-      '2. Если прямое открытие сайта вернуло ошибку, пустой контент или скриншот содержит "Проверяем браузер" / "Подтвердите, что вы не робот" / "Access Denied" — сайт заблокировал бота. НЕ пробуй открывать его снова. Сразу используй search_web.',
-      '3. Если ответ содержит "КАПЧА ОБНАРУЖЕНА" — не пробуй открывать тот же сайт снова. Используй search_web.',
-      '5. Cookie-баннеры ("Согласен", "Принять", "Accept") закрываются автоматически. Если баннер всё ещё виден на скриншоте — игнорируй его и работай с контентом под ним. НЕ пытайся кликнуть по нему повторно.',
-      '4. ФИНИШ ТОЛЬКО когда: у каждого найденного отеля/товара есть прямая ссылка, взятая из инструментов.',
-      '   ПЕРЕД ОТВЕТОМ: пройдись по каждой ссылке — видел ли ты её в секции ССЫЛКИ browse_page/search_web? Нет → не включай.',
+      '## ПРАВИЛО №1 — НЕ ПРИДУМЫВАЙ URL',
+      'Валидные URL — ТОЛЬКО из этих источников:',
+      '  • секция ССЫЛКИ из browse_page',
+      '  • поле url из search_web',
+      'Ты НЕ знаешь реальных URL товаров и отелей. Не конструируй их, не угадывай пути.',
+      'Перед включением каждой ссылки в ответ задай себе: "В каком именно ответе инструмента я видел этот URL?"',
+      'Не можешь ответить точно → ссылку удалить.',
       '',
-      '## КАК РАБОТАТЬ СО СКРИНШОТОМ',
-      'После каждого browse_page ты видишь скриншот страницы (1280×900px).',
-      'Смотри на скриншот и определяй:',
-      '- Где находятся кнопки, фильтры, поля ввода',
-      '- Есть ли сортировка по цене',
-      '- Какие товары/отели видны и их цены',
-      '- Есть ли пагинация',
-      '',
-      'Как кликать по элементам на скриншоте:',
-      '- По тексту: actions=[{type:"click_text", text:"Сортировка"}]',
-      '- По координатам: actions=[{type:"click_coords", x:350, y:220}] — x,y в пикселях от левого верхнего угла',
-      '- Координаты берёшь из скриншота: оцени где находится кнопка/ссылка визуально',
-      '',
-      '## КАК ЛИСТАТЬ СТРАНИЦЫ',
-      'Если на скриншоте видна кнопка "Следующая" / "→" / номера страниц:',
-      '- Кликни по ней: actions=[{type:"click_text", text:"Следующая"}]',
-      '- Или по координатам если текст не работает: actions=[{type:"click_coords", x:..., y:...}]',
-      'Если в секции ПАГИНАЦИЯ есть href — открой его: browse_page(url=href).',
+      '## СТРАТЕГИЯ (соблюдать порядок)',
+      '1. search_web → найти URL нужного сайта.',
+      '2. browse_page(url) → прочитать каталог, получить список вариантов из секции ССЫЛКИ.',
+      '3. Применить фильтры по цене/датам (см. ниже).',
+      '4. browse_page по интересным href → получить детальную информацию.',
+      '5. Финиш: у каждого результата есть прямая ссылка из секции ССЫЛКИ.',
       '',
       '## КАК ПРИМЕНЯТЬ ФИЛЬТРЫ',
-      'ОБЯЗАТЕЛЬНО применяй фильтры/сортировку ДО сбора результатов.',
-      'Смотри на скриншот — ищи панель фильтров, сортировку, чекбоксы.',
-      'Для выпадающего <select>: actions=[{type:"select_option", selector:"...", value:"По цене"}]',
-      'Для кнопки: actions=[{type:"click_text", text:"По возрастанию цены"}]',
-      'Для клика по видимому элементу: actions=[{type:"click_coords", x:..., y:...}]',
       '',
-      '## СТРАТЕГИЯ (строго соблюдать порядок)',
-      '1. Открой сайт → посмотри скриншот → примени фильтры/сортировку по цене.',
-      '2. Смотри список результатов — в секции ССЫЛКИ найди href конкретных товаров/отелей (содержат название или ID объекта в URL).',
-      '3. КЛИКНИ по каждому интересному отелю/товару (или открой его href) → получи прямой URL его страницы.',
-      '4. Только когда у каждого результата есть прямая ссылка — верни итоговый ответ.',
+      '### Способ 1 — URL-параметры (попробуй первым)',
+      'Многие сайты принимают фильтры в URL. Вызови browse_page с модифицированным URL:',
+      '  ostrovok.ru: добавь ?price_min=X&price_max=Y&sort=price',
+      '  booking.com: добавь &nflt=price%3D0-5000&order=price',
+      '  avito.ru: добавь ?pmin=X&pmax=Y&s=104',
       '',
-      `Предпочитаемые сайты отелей: ${PREFERRED_HOTELS}`,
-      `Лимит шагов: ${MAX_ITERATIONS}`,
+      '### Способ 2 — клики через actions',
+      'Шаг А: browse_page(url) без actions → посмотри скриншот → найди фильтры/сортировку.',
+      'Шаг Б: browse_page(url, actions=[...]) — применяй фильтр зная selectors из первого вызова.',
+      '  Для <select>: {type:"select_option", selector:"...", value:"По цене"}',
+      '  Для кнопки по тексту: {type:"click_text", text:"По возрастанию цены"}',
+      '  Для клика по координатам: {type:"click_coords", x:350, y:220}',
+      '',
+      '## ПАГИНАЦИЯ',
+      'Если в секции ПАГИНАЦИЯ есть href → browse_page(url=href).',
+      'Если только кнопка без href → browse_page с action click_text или click_coords.',
+      '',
+      '## КАК ЧИТАТЬ СКРИНШОТ',
+      'Смотри где кнопки, фильтры, поля ввода, цены. Координаты x,y — в пикселях от левого верхнего угла.',
+      '',
+      '## ФОРМАТ ОТВЕТА',
+      'HTML для Telegram. Только теги: <b>жирный</b>, <i>курсив</i>, <a href="URL">текст</a>.',
+      'Не использовать: ** **, [ ]( ), # заголовки, --- разделители.',
+      '',
+      '## ЦЕЛЬ',
+      'Прямые ссылки на конкретные отели/туры, а не на страницы поиска или каталога.',
+      `Предпочитаемые сайты отелей: ${PREFERRED_HOTELS}. Лимит шагов: ${MAX_ITERATIONS}.`,
     ].join('\n');
 
     const model = this.modelService.getChatModel(0.3, modelId).bindTools(tools);
@@ -386,7 +381,9 @@ export class ToursHotelsAgentService extends BaseAgentService {
       searchRecord.searchEngine = 'web';
       searchRecord.agentName = 'tours_hotels_agent';
       await searchRecord.save();
-    } catch { /* non-critical */ }
+    } catch (error) {
+      this.loggerService.warn(this.TAG, 'logSearch failed (non-critical)', error);
+    }
   };
 
 }

@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:gist.github.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:www.scrapeless.com)",
+      "WebFetch(domain:www.browsercat.com)",
+      "WebFetch(domain:www.browserless.io)",
+      "WebFetch(domain:substack.thewebscraping.club)",
+      "WebFetch(domain:webscraping.pro)",
+      "WebFetch(domain:www.browserstack.com)",
+      "WebFetch(domain:yandex.cloud)",
+      "WebFetch(domain:docs.rs)"
+    ]
+  }
+}

@@ -1,6 +1,6 @@
 # Assistent Bot
 
-Telegram-бот на TypeScript с мультиагентной архитектурой на основе LangGraph. Умеет искать вакансии на hh.ru, искать туры и отели через веб-скрапинг, отвечать на общие вопросы, распознавать голос и изображения.
+Telegram-бот на TypeScript с мультиагентной архитектурой на основе LangGraph. Умеет искать вакансии на hh.ru, работать в браузере (покупки, туры, новости, любые сайты), ставить напоминания, отвечать на общие вопросы, распознавать голос и изображения.
 
 ## Стек
 
@@ -8,7 +8,7 @@ Telegram-бот на TypeScript с мультиагентной архитект
 - **Telegram:** Telegraf 4.16
 - **LLM:** LangChain + LangGraph 1.2, совместим с OpenAI API
 - **БД:** PostgreSQL + TypeORM 0.3
-- **Браузер:** Playwright 1.44 (Chromium)
+- **Браузер:** rebrowser-playwright (Chromium) + ghost-cursor
 - **Логи:** Winston + daily rotation
 
 ## Быстрый старт
@@ -31,17 +31,22 @@ TELEGRAM_BOT_TOKEN=          # токен бота от @BotFather
 TELEGRAM_CHAT_ID=            # telegram_id первого пользователя (доступ к боту)
 TELEGRAM_CHAT_ID2=           # telegram_id второго пользователя
 
+# Прокси для Telegram (опционально, SOCKS5)
+TELEGRAM_PROXY_HOST=         # host:port
+TELEGRAM_PROXY_USER=
+TELEGRAM_PROXY_PASS=
+
 # LLM (OpenAI-совместимый endpoint)
 LLM_BASE_URL=                # например https://routerai.ru/api/v1
 LLM_API_KEY=                 # ключ API
-LLM_MODEL_NAME=              # модель по умолчанию (google/gemini-3.1-flash-lite-preview)
+LLM_MODEL_NAME=              # модель по умолчанию
 LLM_TEMPERATURE=0.7          # температура (0–1)
 
 # База данных
 DB=LOCAL                     # LOCAL или HOST
 DB_LOCAL=assistent_bot       # имя локальной БД
-USER_DB_LOCAL=postgres        # пользователь локальной БД
-PASSWORD_DB_LOCAL=            # пароль локальной БД
+USER_DB_LOCAL=postgres       # пользователь локальной БД
+PASSWORD_DB_LOCAL=           # пароль локальной БД
 DB_HOST=assistent_bot        # имя БД на сервере
 USER_DB_HOST=                # пользователь БД на сервере
 PASSWORD_DB_HOST=            # пароль БД на сервере
@@ -51,10 +56,9 @@ YANDEX_SEARCH_API_KEY=       # ключ Yandex Search API
 YANDEX_SEARCH_FOLDER_ID=     # folder_id в Yandex Cloud
 YANDEX_VOICE_API_KEY=        # ключ Yandex SpeechKit (STT)
 
-# Прокси (опционально, SOCKS5)
-PROXY_HOST=                  # host:port
-PROXY_USER=
-PROXY_PASS=
+# Решение капчи (опционально, rucaptcha.com)
+CAPTCHA_SOLVER_API_KEY=      # ключ RuCaptcha/2Captcha
+CAPTCHA_SOLVER_HOST=         # хост сервиса (по умолчанию https://rucaptcha.com)
 
 # Прочее
 PORT=3014
@@ -106,21 +110,24 @@ src/
 │   ├── agents/
 │   │   ├── manager.agent.ts        # роутер запросов
 │   │   ├── general.agent.ts        # общие вопросы
+│   │   ├── browser.agent.ts        # веб-браузер (покупки, поиск, сайты)
 │   │   ├── job-search.agent.ts     # поиск работы (hh.ru)
-│   │   └── tours-hotels.agent.ts   # поиск туров и отелей
+│   │   ├── tours-hotels.agent.ts   # туры и отели (веб-ресёрч)
+│   │   └── reminder.agent.ts       # напоминания
 │   ├── telegram/
 │   │   ├── telegram-bot.service.ts
 │   │   ├── telegram-bot-command.service.ts
 │   │   └── telegram.service.ts
 │   ├── tools/
-│   │   ├── playwright.tool.ts      # браузерный скрапинг
+│   │   ├── playwright.tool.ts      # браузерный скрапинг + антибот-защита
+│   │   ├── captcha-solver.tool.ts  # решение капчи (RuCaptcha/2Captcha)
 │   │   ├── yandex-search.tool.ts   # Yandex Search API
 │   │   ├── yandex-stt.tool.ts      # распознавание речи
 │   │   └── hh-api.tool.ts          # HeadHunter API
 │   ├── model/
 │   │   └── model.service.ts        # управление LLM
 │   ├── search/
-│   │   └── search-cache.service.ts # кэш поисковых запросов
+│   │   └── search-cache.service.ts # кэш поисковых запросов (TTL 6ч)
 │   └── error/
 │       └── error-log.service.ts
 └── routes/
@@ -154,8 +161,10 @@ PostgreSQL, схема `assistent_bot`:
 
 | Агент | Триггеры |
 |---|---|
+| `browser_agent` | поиск в интернете, покупки (WB, Ozon, AliExpress), туры, авиабилеты, отели, сравнение цен, любые действия в браузере |
 | `job_search_agent` | работа, вакансия, резюме, зарплата, hh.ru |
-| `tours_hotels_agent` | тур, отель, купить, цена, найди на сайте |
+| `tours_hotels_agent` | конкретный туристический сайт (ostrovok, booking) или детальный веб-ресёрч туров |
+| `reminder_agent` | напомни, поставь напоминание, через X минут/часов |
 | `general_agent` | всё остальное |
 
 ## Команды бота

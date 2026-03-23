@@ -14,8 +14,8 @@ export class TelegramBotService {
 
   private bot: Telegraf<Context> | null = null;
 
-  private readonly socksProxyAgent: SocksProxyAgent | null = process.env.PROXY_USER && process.env.PROXY_PASS && process.env.PROXY_HOST
-    ? new SocksProxyAgent(`socks5://${process.env.PROXY_USER}:${process.env.PROXY_PASS}@${process.env.PROXY_HOST}`)
+  private readonly socksProxyAgent: SocksProxyAgent | null = process.env.TELEGRAM_PROXY_USER && process.env.TELEGRAM_PROXY_PASS && process.env.TELEGRAM_PROXY_HOST
+    ? new SocksProxyAgent(`socks5://${process.env.TELEGRAM_PROXY_USER}:${process.env.TELEGRAM_PROXY_PASS}@${process.env.TELEGRAM_PROXY_HOST}`)
     : null;
 
   public getSocksProxyAgent = (): SocksProxyAgent | null => this.socksProxyAgent;
@@ -66,12 +66,23 @@ export class TelegramBotService {
 
   public editMessage = async (text: string, telegramId: string, messageId: number, options?: ExtraEditMessageText) => {
     try {
-      return this.getBot().telegram.editMessageText(telegramId, messageId, undefined, text, {
+      return await this.getBot().telegram.editMessageText(telegramId, messageId, undefined, text, {
         parse_mode: 'HTML',
         ...options,
       });
-    } catch {
-      this.loggerService.debug(this.TAG, 'Сообщение могло быть удалено или текст не изменился');
+    } catch (error: any) {
+      const description: string = error?.description ?? error?.message ?? '';
+      if (description.includes('message is not modified') || description.includes('not found')) {
+        this.loggerService.debug(this.TAG, 'editMessage: сообщение не изменилось или удалено');
+        return;
+      }
+      // Для любой другой ошибки (например, Can't parse entities) — отправляем новым сообщением
+      this.loggerService.warn(this.TAG, `editMessage failed, falling back to sendMessage: ${description}`);
+      try {
+        await this.getBot().telegram.sendMessage(telegramId, text, { parse_mode: 'HTML' });
+      } catch (sendError: any) {
+        this.loggerService.error(this.TAG, 'sendMessage fallback also failed', sendError);
+      }
     }
   };
 

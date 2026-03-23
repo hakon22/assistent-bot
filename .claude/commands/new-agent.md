@@ -13,11 +13,11 @@ Create `src/services/agents/<kebab-name>.agent.ts` following this exact structur
 ```typescript
 import { Singleton, Container } from 'typescript-ioc';
 import { START, END, StateGraph, Annotation } from '@langchain/langgraph';
-import { isEmpty } from 'lodash';
+import { isEmpty } from 'lodash-es';
+
 import { BaseService } from '@services/app/base.service';
 import { ErrorLogService } from '@services/error/error-log.service';
 import { ModelService } from '@services/model/model.service';
-import { AgentState } from './manager.agent'; // reuse shared state type if applicable
 
 const StateAnnotation = Annotation.Root({
     userId: Annotation<number>(),

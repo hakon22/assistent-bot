@@ -9,13 +9,14 @@ import { GeneralAgentService } from '@/services/agents/general.agent';
 import { JobSearchAgentService } from '@/services/agents/job-search.agent';
 import { ToursHotelsAgentService } from '@/services/agents/tours-hotels.agent';
 import { ReminderAgentService } from '@/services/agents/reminder.agent';
+import { BrowserAgentService } from '@/services/agents/browser.agent';
 import { AgentDelegationLogEntity } from '@/db/entities/agent-delegation-log.entity';
 import { RequestEntity } from '@/db/entities/request.entity';
 import { RequestService } from '@/services/request/request.service';
 import { ConversationHistoryEntity } from '@/db/entities/conversation-history.entity';
 import { TelegramDialogStateEntity, TelegramDialogStateEnum } from '@/db/entities/telegram-dialog-state.entity';
 
-type AgentName = 'job_search_agent' | 'tours_hotels_agent' | 'general_agent' | 'reminder_agent';
+type AgentName = 'job_search_agent' | 'tours_hotels_agent' | 'general_agent' | 'reminder_agent' | 'browser_agent';
 
 const AGENTS_REGISTRY: { name: AgentName; description: string; }[] = [
   {
@@ -23,12 +24,16 @@ const AGENTS_REGISTRY: { name: AgentName; description: string; }[] = [
     description: 'Используй когда пользователь хочет найти работу, просмотреть вакансии, узнать об открытых позициях, отправить резюме, узнать зарплату по специальности. Ключевые слова: работа, вакансия, резюме, зарплата, трудоустройство, hh, хэдхантер, оффер, собеседование, устроиться.',
   },
   {
+    name: 'browser_agent',
+    description: 'Используй когда пользователь хочет найти что-то в интернете, на конкретном сайте, купить товар (WB, Ozon, AliExpress и другие магазины), найти тур, отель, авиабилеты, сравнить цены, прочитать новость, найти информацию на сайте, заполнить форму или выполнить любое другое действие в браузере. Ключевые слова: найди на, открой, зайди на, поищи в интернете, вайлдберис, озон, алиэкспресс, авиасейлс, купи, найди товар, тур, отель, билет, цена, скидка.',
+  },
+  {
     name: 'tours_hotels_agent',
-    description: 'Используй когда пользователь хочет найти конкретный товар или услугу в интернете: тур, отель (ostrovok.ru, 101hotel.ru), авиабилеты, купить что-то на конкретном сайте, узнать цену, найти самое дешёвое предложение. Ключевые слова: тур, отель, путешествие, отдых, купить, цена, товар, каталог, бронирование, найди на сайте.',
+    description: 'Используй только когда пользователь прямо упоминает конкретный туристический сайт (ostrovok, 101hotel, booking) или просит подобрать тур/отель с детальным сравнением вариантов через веб-ресёрч.',
   },
   {
     name: 'general_agent',
-    description: 'Используй для всех остальных запросов. Отвечает на общие вопросы, ведёт беседу, объясняет понятия, даёт советы. Используй как fallback по умолчанию.',
+    description: 'Используй для всех остальных запросов. Отвечает на общие вопросы, ведёт беседу, объясняет понятия, даёт советы, помогает с текстом, кодом, переводом. Используй как fallback по умолчанию.',
   },
   {
     name: 'reminder_agent',
@@ -94,6 +99,8 @@ export class ManagerAgentService {
   private readonly toursHotelsAgentService = Container.get(ToursHotelsAgentService);
 
   private readonly reminderAgentService = Container.get(ReminderAgentService);
+
+  private readonly browserAgentService = Container.get(BrowserAgentService);
 
   private readonly requestService = Container.get(RequestService);
 
@@ -214,6 +221,22 @@ export class ManagerAgentService {
     }
   };
 
+  private browserNode = async (state: AgentState): Promise<Partial<AgentState>> => {
+    try {
+      const response = await this.browserAgentService.process({
+        telegramId: state.telegramId,
+        userId: state.userId,
+        requestId: state.requestId,
+        messageText: state.messageText,
+        modelId: state.modelId,
+      });
+      return { response };
+    } catch (error) {
+      this.loggerService.error(this.TAG, 'BrowserAgent error', error);
+      return { response: 'Произошла ошибка при работе браузера. Попробуйте позже.' };
+    }
+  };
+
   private reminderNode = async (state: AgentState): Promise<Partial<AgentState>> => {
     try {
       const result = await this.reminderAgentService.process({
@@ -237,6 +260,7 @@ export class ManagerAgentService {
       .addNode('tours_hotels_agent', this.toursHotelsNode)
       .addNode('general_agent', this.generalNode)
       .addNode('reminder_agent', this.reminderNode)
+      .addNode('browser_agent', this.browserNode)
       .addEdge('__start__', 'router')
       .addConditionalEdges(
         'router',
@@ -246,12 +270,14 @@ export class ManagerAgentService {
           tours_hotels_agent: 'tours_hotels_agent',
           general_agent: 'general_agent',
           reminder_agent: 'reminder_agent',
+          browser_agent: 'browser_agent',
         },
       )
       .addEdge('job_search_agent', END)
       .addEdge('tours_hotels_agent', END)
       .addEdge('general_agent', END)
-      .addEdge('reminder_agent', END);
+      .addEdge('reminder_agent', END)
+      .addEdge('browser_agent', END);
 
     return graph.compile();
   };

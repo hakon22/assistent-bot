@@ -267,7 +267,7 @@ if (isActive === false) { ... }
 For checks against `undefined`, `null`, empty arrays, or empty objects — always use lodash functions instead of manual checks:
 
 ```typescript
-import { isNil, isNull, isUndefined, isEmpty } from 'lodash';
+import { isNil, isNull, isUndefined, isEmpty } from 'lodash-es';
 
 // Correct:
 if (isNil(value)) {

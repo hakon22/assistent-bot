@@ -1,8 +1,8 @@
 import { Container, Singleton } from 'typescript-ioc';
 import axios from 'axios';
 
+import { BaseService } from '@/services/app/base.service';
 import { SearchCacheService } from '@/services/search/search-cache.service';
-import { LoggerService } from '@/services/app/logger.service';
 
 export interface YandexSearchResult {
   title: string;
@@ -10,141 +10,112 @@ export interface YandexSearchResult {
   snippet: string;
 }
 
-interface YandexPassage {
-  '#text'?: string;
-}
-
-interface YandexDocument {
-  title?: string;
-  url?: string;
-  headline?: string;
-  passages?: {
-    passage?: (string | YandexPassage)[];
-  };
-}
-
-interface YandexGroup {
-  document?: YandexDocument[];
-}
-
-interface YandexOperationResponse {
-  done?: boolean;
-  error?: unknown;
-  response?: {
-    result?: {
-      grouping?: {
-        group?: YandexGroup[];
-      }[];
-    };
-  };
-}
-
 @Singleton
-export class YandexSearchTool {
+export class YandexSearchTool extends BaseService {
   private readonly TAG = 'YandexSearchTool';
-
-  private readonly loggerService = Container.get(LoggerService);
 
   private readonly apiKey = process.env.YANDEX_SEARCH_API_KEY ?? '';
 
   private readonly folderId = process.env.YANDEX_SEARCH_FOLDER_ID ?? '';
 
-  private readonly baseUrl = 'https://searchapi.api.cloud.yandex.net/v2/web/searchAsync';
+  /** Синхронный эндпоинт — отвечает сразу, без polling */
+  private readonly baseUrl = 'https://searchapi.api.cloud.yandex.net/v2/web/search';
 
   private readonly searchCacheService = Container.get(SearchCacheService);
 
-  /** Search Yandex, with 6h cache */
-  public search = async (query: string, limit = 5): Promise<YandexSearchResult[]> => {
+  public search = async (query: string, limit = 10): Promise<YandexSearchResult[]> => {
     if (!this.apiKey || !this.folderId) {
       throw new Error('Yandex Search API key or folder ID is not configured');
     }
 
-    // Check cache
     const cached = await this.searchCacheService.get(query);
     if (cached) {
       return (cached as YandexSearchResult[]).slice(0, limit);
     }
 
     try {
+      this.loggerService.info(this.TAG, 'Sending search request', { query });
       const response = await axios.post(
         this.baseUrl,
         {
           query: {
-            search_type: 'SEARCH_TYPE_RU',
-            query_text: query,
+            searchType: 'SEARCH_TYPE_RU',
+            queryText: query,
             familyMode: 'FAMILY_MODE_NONE',
             page: 0,
           },
-          sort_spec: { sort_mode: 'SORT_MODE_BY_RELEVANCE' },
-          groups_spec: { attr: '', mode: 'FLAT', groups_on_page: limit, docs_in_group: 1 },
-          max_passages: 2,
+          sortSpec: { sortMode: 'SORT_MODE_BY_RELEVANCE' },
+          groupsSpec: { attr: 'd', mode: 'deep', groupsOnPage: limit, docsInGroup: 1 },
+          maxPassages: 2,
           region: '225',
           l10n: 'LOCALIZATION_RU',
-          folder_id: this.folderId,
+          folderId: this.folderId,
         },
         {
           headers: { Authorization: `Api-Key ${this.apiKey}`, 'Content-Type': 'application/json' },
-          timeout: 30000,
+          timeout: 15000,
         },
       );
 
-      const operationId = response.data?.id;
-      if (!operationId) {
+      const rawData: string | undefined = response.data?.rawData;
+      if (!rawData) {
+        this.loggerService.warn(this.TAG, 'No rawData in response');
         return [];
       }
 
-      const results = await this.pollOperation(operationId);
+      const xml = Buffer.from(rawData, 'base64').toString('utf-8');
+      const results = this.parseXmlResults(xml).slice(0, limit);
       await this.searchCacheService.set(query, results);
-      return results.slice(0, limit);
+      return results;
     } catch (error) {
-      this.loggerService.error(this.TAG, 'Search error', error);
+      const responseData = (error as any)?.response?.data;
+      this.loggerService.error(this.TAG, 'Search error', responseData ? { message: (error as any).message, responseData } : error);
       return [];
     }
   };
 
-  private pollOperation = async (operationId: string, maxAttempts = 10): Promise<YandexSearchResult[]> => {
-    const operationUrl = `https://operation.api.cloud.yandex.net/operations/${operationId}`;
+  /** Парсим XML ответ Яндекс Поиска через regex (без внешних зависимостей) */
+  private parseXmlResults = (xml: string): YandexSearchResult[] => {
+    const results: YandexSearchResult[] = [];
 
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      await this.sleep(2000);
+    const docPattern = /<doc\b[^>]*>([\s\S]*?)<\/doc>/g;
+    let docMatch: RegExpExecArray | null;
 
-      const operationResponse = await axios.get(operationUrl, {
-        headers: { Authorization: `Api-Key ${this.apiKey}` },
-        timeout: 15000,
-      });
+    while ((docMatch = docPattern.exec(xml)) !== null) {
+      const block = docMatch[1];
 
-      const operation: YandexOperationResponse = operationResponse.data;
-      if (!operation.done) {
-        continue;
+      const url = this.extractXmlTag(block, 'url');
+      const title = this.stripXmlTags(this.extractXmlTag(block, 'title'));
+      const headline = this.stripXmlTags(this.extractXmlTag(block, 'headline'));
+
+      const passagePattern = /<passage>([\s\S]*?)<\/passage>/g;
+      const passages: string[] = [];
+      let passageMatch: RegExpExecArray | null;
+      while ((passageMatch = passagePattern.exec(block)) !== null) {
+        passages.push(this.stripXmlTags(passageMatch[1]).trim());
       }
+      const snippet = passages.join(' ').trim() || headline;
 
-      if (operation.error) {
-        throw new Error(`Yandex Search operation failed: ${JSON.stringify(operation.error)}`);
+      if (url && title) {
+        results.push({ url, title, snippet });
       }
-
-      return this.parseResults(operation.response);
     }
 
-    return [];
+    this.loggerService.info(this.TAG, `Search results: ${results.length}`);
+    return results;
   };
 
-  private parseResults = (response: YandexOperationResponse['response']): YandexSearchResult[] => {
-    try {
-      const groups = response?.result?.grouping?.[0]?.group ?? [];
-      return groups.slice(0, 10).map((group) => {
-        const document = group.document?.[0] ?? {};
-        const passages = document.passages?.passage ?? [];
-        const snippet = passages.map((passage) => (typeof passage === 'string' ? passage : passage['#text'] ?? '')).join(' ').trim();
-        return {
-          title: document.title ?? '',
-          url: document.url ?? '',
-          snippet: snippet || (document.headline ?? ''),
-        };
-      });
-    } catch {
-      return [];
-    }
+  private extractXmlTag = (xml: string, tag: string): string => {
+    const match = xml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`));
+    return match?.[1] ?? '';
   };
 
-  private sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+  private stripXmlTags = (text: string): string =>
+    text
+      .replace(/<[^>]+>/g, '')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+      .replace(/&quot;/g, '"')
+      .trim();
 }
