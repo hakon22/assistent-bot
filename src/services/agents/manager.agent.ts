@@ -3,11 +3,12 @@ import { StateGraph, END } from '@langchain/langgraph';
 import { Annotation } from '@langchain/langgraph';
 import { SystemMessage, HumanMessage } from '@langchain/core/messages';
 
+import { BaseAgentService } from '@/services/agents/base-agent.service';
 import { ModelService } from '@/services/model/model.service';
-import { LoggerService } from '@/services/app/logger.service';
 import { GeneralAgentService } from '@/services/agents/general.agent';
 import { JobSearchAgentService } from '@/services/agents/job-search.agent';
 import { ToursHotelsAgentService } from '@/services/agents/tours-hotels.agent';
+import { ProductComparisonAgentService } from '@/services/agents/product-comparison.agent';
 import { ReminderAgentService } from '@/services/agents/reminder.agent';
 import { BrowserAgentService } from '@/services/agents/browser.agent';
 import { AgentDelegationLogEntity } from '@/db/entities/agent-delegation-log.entity';
@@ -16,7 +17,7 @@ import { RequestService } from '@/services/request/request.service';
 import { ConversationHistoryEntity } from '@/db/entities/conversation-history.entity';
 import { TelegramDialogStateEntity, TelegramDialogStateEnum } from '@/db/entities/telegram-dialog-state.entity';
 
-type AgentName = 'job_search_agent' | 'tours_hotels_agent' | 'general_agent' | 'reminder_agent' | 'browser_agent';
+type AgentName = 'job_search_agent' | 'tours_hotels_agent' | 'general_agent' | 'reminder_agent' | 'browser_agent' | 'product_comparison_agent';
 
 const AGENTS_REGISTRY: { name: AgentName; description: string; }[] = [
   {
@@ -30,6 +31,10 @@ const AGENTS_REGISTRY: { name: AgentName; description: string; }[] = [
   {
     name: 'tours_hotels_agent',
     description: 'Используй только когда пользователь прямо упоминает конкретный туристический сайт (ostrovok, 101hotel, booking) или просит подобрать тур/отель с детальным сравнением вариантов через веб-ресёрч.',
+  },
+  {
+    name: 'product_comparison_agent',
+    description: 'Используй когда пользователь хочет сравнить два или более конкретных товара, узнать какой лучше, прочитать реальные отзывы и выбрать между альтернативами. Ключевые слова: сравни, сравнение, что лучше, выбрать между, какой лучше, отзывы на, плюсы и минусы, vs, versus, iPhone vs, резина, шины, ноутбук сравнение.',
   },
   {
     name: 'general_agent',
@@ -57,6 +62,7 @@ const AgentStateAnnotation = Annotation.Root({
   response: Annotation<string | undefined>(),
   inlineKeyboard: Annotation<string | null | undefined>(),
   onAgentSelected: Annotation<((agentName: string) => Promise<void>) | undefined>(),
+  onStatusUpdate: Annotation<((text: string) => Promise<void>) | undefined>(),
 });
 
 type AgentState = typeof AgentStateAnnotation.State;
@@ -72,6 +78,7 @@ export interface ManagerInput {
   resumeText?: string;
   modelId?: string | null;
   onAgentSelected?: (agentName: string) => Promise<void>;
+  onStatusUpdate?: (text: string) => Promise<void>;
 }
 
 export interface ManagerResult {
@@ -81,14 +88,14 @@ export interface ManagerResult {
 }
 
 @Singleton
-export class ManagerAgentService {
-  private readonly TAG = 'ManagerAgentService';
+export class ManagerAgentService extends BaseAgentService {
+  protected readonly TAG = 'ManagerAgentService';
+
+  protected readonly AGENT_NAME = 'manager_agent';
 
   private readonly REMINDER_PATTERN = /^(?:напомни\b|поставь напоминание|не забудь|через \d+\s*(?:секунд|минут|минуты|минуту|час|часа|часов))/i;
 
   private readonly MEDIA_PREFIX_PATTERN = /^\[(?:Голосовое|Видеосообщение|Видео|Аудио)\]:\s*/i;
-
-  private readonly loggerService = Container.get(LoggerService);
 
   private readonly modelService = Container.get(ModelService);
 
@@ -101,6 +108,8 @@ export class ManagerAgentService {
   private readonly reminderAgentService = Container.get(ReminderAgentService);
 
   private readonly browserAgentService = Container.get(BrowserAgentService);
+
+  private readonly productComparisonAgentService = Container.get(ProductComparisonAgentService);
 
   private readonly requestService = Container.get(RequestService);
 
@@ -118,7 +127,7 @@ export class ManagerAgentService {
 
     const systemPrompt = [
       'Ты — маршрутизатор запросов для мультиагентной системы.',
-      `Текущая дата: ${new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}.`,
+      this.buildAgentCurrentDatePromptBlock(),
       'Проанализируй сообщение пользователя и выбери наиболее подходящего агента.',
       '',
       'Доступные агенты:',
@@ -194,6 +203,7 @@ export class ManagerAgentService {
         requestId: state.requestId,
         messageText: state.messageText,
         modelId: state.modelId,
+        onStatusUpdate: state.onStatusUpdate,
       });
       return { response };
     } catch (error) {
@@ -221,6 +231,23 @@ export class ManagerAgentService {
     }
   };
 
+  private productComparisonNode = async (state: AgentState): Promise<Partial<AgentState>> => {
+    try {
+      const response = await this.productComparisonAgentService.process({
+        telegramId: state.telegramId,
+        userId: state.userId,
+        requestId: state.requestId,
+        messageText: state.messageText,
+        modelId: state.modelId,
+        onStatusUpdate: state.onStatusUpdate,
+      });
+      return { response };
+    } catch (error) {
+      this.loggerService.error(this.TAG, 'ProductComparisonAgent error', error);
+      return { response: 'Произошла ошибка при сравнении товаров. Попробуйте позже.' };
+    }
+  };
+
   private browserNode = async (state: AgentState): Promise<Partial<AgentState>> => {
     try {
       const response = await this.browserAgentService.process({
@@ -229,6 +256,7 @@ export class ManagerAgentService {
         requestId: state.requestId,
         messageText: state.messageText,
         modelId: state.modelId,
+        onStatusUpdate: state.onStatusUpdate,
       });
       return { response };
     } catch (error) {
@@ -261,6 +289,7 @@ export class ManagerAgentService {
       .addNode('general_agent', this.generalNode)
       .addNode('reminder_agent', this.reminderNode)
       .addNode('browser_agent', this.browserNode)
+      .addNode('product_comparison_agent', this.productComparisonNode)
       .addEdge('__start__', 'router')
       .addConditionalEdges(
         'router',
@@ -271,13 +300,15 @@ export class ManagerAgentService {
           general_agent: 'general_agent',
           reminder_agent: 'reminder_agent',
           browser_agent: 'browser_agent',
+          product_comparison_agent: 'product_comparison_agent',
         },
       )
       .addEdge('job_search_agent', END)
       .addEdge('tours_hotels_agent', END)
       .addEdge('general_agent', END)
       .addEdge('reminder_agent', END)
-      .addEdge('browser_agent', END);
+      .addEdge('browser_agent', END)
+      .addEdge('product_comparison_agent', END);
 
     return graph.compile();
   };
@@ -346,6 +377,7 @@ export class ManagerAgentService {
       response: undefined,
       inlineKeyboard: undefined,
       onAgentSelected: input.onAgentSelected,
+      onStatusUpdate: input.onStatusUpdate,
     });
 
     const responseText = result.response ?? 'Извините, не удалось обработать ваш запрос.';

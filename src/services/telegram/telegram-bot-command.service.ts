@@ -24,6 +24,8 @@ const ACKNOWLEDGEMENTS: Record<string, string> = {
   tours_hotels_agent: 'Ищу в интернете',
   general_agent: 'Обрабатываю запрос',
   reminder_agent: 'Обрабатываю напоминание',
+  product_comparison_agent: 'Читаю отзывы и сравниваю',
+  browser_agent: 'Открываю браузер',
 };
 
 const DOTS = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -52,8 +54,11 @@ export class TelegramBotCommandService extends BaseService {
 
   private readonly MAX_ERROR_MESSAGE_LENGTH = 4000;
 
-  /** telegramId → функция отмены текущего запроса */
+  /** requestId (строка) → отмена конкретного запроса (callback_data stop:<requestId>) */
   private readonly cancelMap = new Map<string, () => void>();
+
+  /** telegramId → последний активный requestId для /stop */
+  private readonly latestCancelKeyByUser = new Map<string, string>();
 
   public register = (bot: Telegraf<Context>): void => {
 
@@ -124,7 +129,8 @@ export class TelegramBotCommandService extends BaseService {
     bot.command('stop', async (ctx) => {
       const telegramId = ctx.from?.id?.toString();
       if (!telegramId) return;
-      const cancel = this.cancelMap.get(telegramId);
+      const cancelKey = this.latestCancelKeyByUser.get(telegramId);
+      const cancel = cancelKey ? this.cancelMap.get(cancelKey) : undefined;
       if (cancel) {
         cancel();
       } else {
@@ -444,14 +450,14 @@ export class TelegramBotCommandService extends BaseService {
           return;
         }
 
-        // stop:<telegramId>
+        // stop:<requestId> — ID заявки из RequestEntity, совпадает с callback на кнопке «Остановить»
         if (data.startsWith('stop:')) {
-          const targetId = data.slice('stop:'.length);
-          const cancel = this.cancelMap.get(targetId);
+          const cancelKey = data.slice('stop:'.length);
+          const cancel = this.cancelMap.get(cancelKey);
           if (cancel) {
             cancel();
           } else {
-            await this.telegramService.sendMessage('Задача уже завершена или не найдена.', user.telegramId);
+            await this.telegramService.sendMessage('Задача уже завершена или кнопка относится к старому сообщению.', user.telegramId);
           }
           return;
         }
@@ -637,24 +643,47 @@ export class TelegramBotCommandService extends BaseService {
     }).catch(() => undefined);
   };
 
-  private createSpinner = async (telegramId: string, baseText: string) => {
+  private createSpinner = async (
+    telegramId: string,
+    baseText: string,
+    spinnerOptions?: { cancelKey?: string; },
+  ) => {
     let dotStep = 0;
     let messageId: number | null = null;
     let timer: ReturnType<typeof setInterval> | null = null;
-    const stopKeyboard = { inline_keyboard: [[{ text: '⛔ Остановить', callback_data: `stop:${telegramId}` }]] };
+    let cancelKey: string | null = spinnerOptions?.cancelKey ?? null;
+
+    const buildStopKeyboard = () =>
+      (cancelKey
+        ? { inline_keyboard: [[{ text: '⛔ Остановить', callback_data: `stop:${cancelKey}` }]] }
+        : undefined);
 
     const renderText = () => `${DOTS[dotStep]} ${baseText}...`;
 
     const sent = await this.telegramService
-      .sendMessage(renderText(), telegramId, { reply_markup: stopKeyboard } as any)
+      .sendMessage(
+        renderText(),
+        telegramId,
+        buildStopKeyboard() ? ({ reply_markup: buildStopKeyboard() } as any) : undefined,
+      )
       .catch(() => undefined);
     messageId = sent?.message_id ?? null;
+
+    const setCancelKeyboard = async (newCancelKey: string) => {
+      cancelKey = newCancelKey;
+      if (!messageId) return;
+      const markup = buildStopKeyboard();
+      if (markup) {
+        await this.telegramService.editMessageReplyMarkup(telegramId, messageId, markup);
+      }
+    };
 
     const updateText = async (newBase: string) => {
       baseText = newBase;
       if (messageId) {
+        const keyboardExtra = buildStopKeyboard() ? ({ reply_markup: buildStopKeyboard() } as any) : undefined;
         await this.telegramService
-          .editMessage(renderText(), telegramId, messageId, { reply_markup: stopKeyboard } as any)
+          .editMessage(renderText(), telegramId, messageId, keyboardExtra)
           .catch(() => undefined);
       }
     };
@@ -662,8 +691,9 @@ export class TelegramBotCommandService extends BaseService {
     if (messageId) {
       timer = setInterval(async () => {
         dotStep = (dotStep + 1) % DOTS.length;
+        const keyboardExtra = buildStopKeyboard() ? ({ reply_markup: buildStopKeyboard() } as any) : undefined;
         await this.telegramService
-          .editMessage(renderText(), telegramId, messageId!, { reply_markup: stopKeyboard } as any)
+          .editMessage(renderText(), telegramId, messageId!, keyboardExtra)
           .catch(() => undefined);
       }, 3000);
     }
@@ -676,14 +706,19 @@ export class TelegramBotCommandService extends BaseService {
       stop();
       if (messageId) {
         await this.telegramService
-          .editMessage(finalText, telegramId, messageId, replyMarkup ? { reply_markup: replyMarkup } as any : undefined)
+          .editMessage(
+            finalText,
+            telegramId,
+            messageId,
+            replyMarkup ? { reply_markup: replyMarkup } as any : { reply_markup: { inline_keyboard: [] } } as any,
+          )
           .catch(() => undefined);
       } else {
         await this.telegramService.sendMessage(finalText, telegramId, replyMarkup ? { reply_markup: replyMarkup } as any : undefined);
       }
     };
 
-    return { messageId, updateText, stop, finish };
+    return { messageId, updateText, stop, finish, setCancelKeyboard };
   };
 
   private runManager = async (
@@ -698,13 +733,20 @@ export class TelegramBotCommandService extends BaseService {
     },
   ): Promise<void> => {
     let spinner = options.spinner ?? null;
+    const cancelKey = String(options.requestId);
 
-    // Cancel-промис: resolve вызывается через cancelMap
     let cancelFn: () => void = () => undefined;
     const cancelPromise = new Promise<never>((_, reject) => {
       cancelFn = () => reject(new Error('Cancelled'));
     });
-    this.cancelMap.set(user.telegramId, cancelFn);
+    this.cancelMap.set(cancelKey, cancelFn);
+    this.latestCancelKeyByUser.set(user.telegramId, cancelKey);
+
+    if (spinner) {
+      await spinner.setCancelKeyboard(cancelKey);
+    } else {
+      spinner = await this.createSpinner(user.telegramId, 'Выбираю агента', { cancelKey });
+    }
 
     try {
       const result = await Promise.race([
@@ -717,14 +759,17 @@ export class TelegramBotCommandService extends BaseService {
           imageUrl: options.imageUrl,
           mediaType: options.mediaType,
           resumeText: user.resumeText ?? undefined,
-          modelId: user.modelId ?? undefined,
+          modelId: await this.resolveModelId(user),
           onAgentSelected: async (agentName: string) => {
             const ackText = ACKNOWLEDGEMENTS[agentName] ?? 'Обрабатываю запрос';
             if (spinner) {
               await spinner.updateText(ackText);
             } else {
-              spinner = await this.createSpinner(user.telegramId, ackText);
+              spinner = await this.createSpinner(user.telegramId, ackText, { cancelKey });
             }
+          },
+          onStatusUpdate: async (text: string) => {
+            await spinner?.updateText(text);
           },
         }),
         cancelPromise,
@@ -751,7 +796,10 @@ export class TelegramBotCommandService extends BaseService {
         await this.sendErrorToUser(user.telegramId, error);
       }
     } finally {
-      this.cancelMap.delete(user.telegramId);
+      this.cancelMap.delete(cancelKey);
+      if (this.latestCancelKeyByUser.get(user.telegramId) === cancelKey) {
+        this.latestCancelKeyByUser.delete(user.telegramId);
+      }
     }
   };
 
@@ -764,6 +812,14 @@ export class TelegramBotCommandService extends BaseService {
       } catch { /* fallback to plain send */ }
     }
     await this.telegramService.sendMessage(text, telegramId);
+  };
+
+  private resolveModelId = async (user: UserEntity): Promise<string | undefined> => {
+    if (user.modelId) {
+      return user.modelId;
+    }
+    const defaultModel = await ModelEntity.findOne({ where: { isDefault: true } });
+    return defaultModel?.modelId ?? undefined;
   };
 
   // ──────────────── HELPERS ────────────────

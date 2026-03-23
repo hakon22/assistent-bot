@@ -1,5 +1,6 @@
 FROM node:25-alpine AS deps
 WORKDIR /app
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 COPY package*.json ./
 RUN npm ci
 
@@ -22,9 +23,6 @@ RUN apk add --no-cache \
     harfbuzz \
     ca-certificates \
     ttf-freefont
-
-ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder /app/dist/src ./src

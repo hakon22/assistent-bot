@@ -35,7 +35,9 @@ export type PageAction =
   | { type: 'click_coords'; x: number; y: number }
   | { type: 'fill_placeholder'; placeholder: string; value: string }
   | { type: 'fill_selector'; selector: string; value: string }
+  | { type: 'fill_label'; label: string; value: string }
   | { type: 'select_option'; selector: string; value: string }
+  | { type: 'set_checked'; selector: string; checked: boolean }
   | { type: 'hover'; selector: string }
   | { type: 'scroll_bottom' }
   | { type: 'scroll_top' }
@@ -438,6 +440,7 @@ export class PlaywrightTool {
       await page.waitForLoadState('networkidle', { timeout: 8000 });
     } catch { /* ok */ }
 
+    await this.waitForHotelSpaContent(page, input.url);
     await this.solveCaptchaIfNeeded(page);
 
     for (const action of input.actions ?? []) {
@@ -457,23 +460,23 @@ export class PlaywrightTool {
   /** Плавный скролл до конца страницы для lazy-загрузки */
   private autoScroll = async (page: Page): Promise<void> => {
     try {
-      await page.evaluate(async () => {
-        await new Promise<void>((resolve) => {
-          let totalScrolled = 0;
-          const step = 400;
-          const maxScroll = 6000;
-          const timer = setInterval(() => {
+      await page.evaluate(`(() => {
+        return new Promise(function (resolve) {
+          var totalScrolled = 0;
+          var step = 400;
+          var maxScroll = 6000;
+          var timer = setInterval(function () {
             window.scrollBy(0, step);
             totalScrolled += step;
             if (totalScrolled >= maxScroll || totalScrolled >= document.body.scrollHeight) {
               clearInterval(timer);
               window.scrollTo(0, 0);
-              resolve();
+              resolve(undefined);
             }
           }, 120);
-          setTimeout(() => { clearInterval(timer); resolve(); }, 4000);
+          setTimeout(function () { clearInterval(timer); resolve(undefined); }, 4000);
         });
-      });
+      })()`);
     } catch { /* страница перешла на другой URL во время скролла */ }
   };
 
@@ -546,6 +549,18 @@ export class PlaywrightTool {
         await page.waitForTimeout(300);
         break;
       }
+      case 'fill_label': {
+        const labeledInput = page.getByLabel(action.label, { exact: false }).first();
+        await labeledInput.fill(action.value, { timeout: 5000 });
+        await page.waitForTimeout(300);
+        break;
+      }
+      case 'set_checked': {
+        await page.locator(action.selector).first().setChecked(action.checked, { timeout: 3000 });
+        await page.waitForTimeout(400);
+        try { await page.waitForLoadState('networkidle', { timeout: 3000 }); } catch { /* ok */ }
+        break;
+      }
       case 'select_option': {
         try {
           await page.selectOption(action.selector, { label: action.value }, { timeout: 3000 });
@@ -564,17 +579,18 @@ export class PlaywrightTool {
         break;
       }
       case 'scroll_bottom': {
-        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+        await page.evaluate('window.scrollTo(0, document.body.scrollHeight)');
         await page.waitForTimeout(500);
         break;
       }
       case 'scroll_top': {
-        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.evaluate('window.scrollTo(0, 0)');
         await page.waitForTimeout(300);
         break;
       }
       case 'scroll_px': {
-        await page.evaluate((pixels) => window.scrollBy(0, pixels), action.pixels);
+        const pixels = Math.round(Number(action.pixels));
+        await page.evaluate(`window.scrollBy(0, ${Number.isFinite(pixels) ? pixels : 0})`);
         await page.waitForTimeout(300);
         break;
       }
@@ -613,34 +629,36 @@ export class PlaywrightTool {
       } catch { /* non-critical */ }
     }
 
-    const content = await page.evaluate(() => {
-      const elementsToRemove = document.querySelectorAll('nav, script, style, noscript, .ads, .advertisement, .cookie, footer, .footer, header');
-      elementsToRemove.forEach((removableElement) => removableElement.remove());
-      const mainElement = document.querySelector(
+    // Строковые скрипты: иначе tsx/tsc могут вставить __name() в сериализуемое тело — в браузере его нет (ReferenceError).
+    const content = await page.evaluate(`(() => {
+      var elementsToRemove = document.querySelectorAll('nav, script, style, noscript, .ads, .advertisement, .cookie, footer, .footer, header');
+      elementsToRemove.forEach(function (removableElement) { removableElement.remove(); });
+      var mainElement = document.querySelector(
         'main, article, [role="main"], .content, #content, .main, ' +
         '.catalog, .catalog-section, .catalog-container, .products, .product-list, .product-grid, ' +
         '.items, .goods, .shop-list, #catalog, #products, .category-products, ' +
         '.page-content, .page__content, #page-content, .site-content',
-      ) ?? document.body;
-      return ((mainElement as HTMLElement).innerText ?? mainElement.textContent ?? '').replace(/\s+/g, ' ').trim().substring(0, 10000);
-    });
+      ) || document.body;
+      var innerText = mainElement.innerText || mainElement.textContent || '';
+      return innerText.replace(/\\s+/g, ' ').trim().substring(0, 10000);
+    })()`) as string;
 
-    const buttons = await page.evaluate(() => {
-      const result: { text: string; selector: string; }[] = [];
-      const buttonElements = document.querySelectorAll('button, [role="button"], .btn, input[type="submit"], input[type="button"], a.button, a.btn');
-      buttonElements.forEach((buttonElement, buttonIndex) => {
-        const text = ((buttonElement as HTMLElement).textContent ?? (buttonElement as HTMLInputElement).value ?? '').trim().replace(/\s+/g, ' ');
+    const buttons = await page.evaluate(`(() => {
+      var result = [];
+      var buttonElements = document.querySelectorAll('button, [role="button"], .btn, input[type="submit"], input[type="button"], a.button, a.btn');
+      buttonElements.forEach(function (buttonElement, buttonIndex) {
+        var text = (buttonElement.textContent || buttonElement.value || '').trim().replace(/\\s+/g, ' ');
         if (!text || text.length > 120) return;
-        let selector = buttonElement.tagName.toLowerCase();
-        if (buttonElement.id) selector = `#${CSS.escape(buttonElement.id)}`;
+        var selector = buttonElement.tagName.toLowerCase();
+        if (buttonElement.id) selector = '#' + CSS.escape(buttonElement.id);
         else if (buttonElement.className && typeof buttonElement.className === 'string') {
-          const firstCssClass = buttonElement.className.trim().split(/\s+/)[0];
-          if (firstCssClass) selector = `${buttonElement.tagName.toLowerCase()}.${CSS.escape(firstCssClass)}:nth-of-type(${buttonIndex + 1})`;
+          var firstCssClass = buttonElement.className.trim().split(/\\s+/)[0];
+          if (firstCssClass) selector = buttonElement.tagName.toLowerCase() + '.' + CSS.escape(firstCssClass) + ':nth-of-type(' + (buttonIndex + 1) + ')';
         }
-        result.push({ text, selector });
+        result.push({ text: text, selector: selector });
       });
       return result.slice(0, 60);
-    });
+    })()`) as { text: string; selector: string; }[];
 
     const currentPageUrl = page.url();
     const isMarketplacePage = currentPageUrl.includes('wildberries.ru') || currentPageUrl.includes('ozon.ru');
@@ -655,122 +673,124 @@ export class PlaywrightTool {
       } catch { /* если нет — продолжаем с тем что есть */ }
     }
 
-    const links = await page.evaluate((isMarketplace: boolean) => {
-      if (isMarketplace) {
-        const productLinks = Array.from(
-          document.querySelectorAll(
+    const links = await page.evaluate(
+      `(() => {
+        var isMarketplace = ${JSON.stringify(isMarketplacePage)};
+        if (isMarketplace) {
+          var productLinks = Array.from(document.querySelectorAll(
             'a[href*="/catalog/"][href*="/detail"], a[href*="wildberries.ru/catalog/"], a[href*="ozon.ru/product/"], a[href*="/product/"]',
-          ),
-        )
-          .map((anchor) => ({
-            text: ((anchor as HTMLAnchorElement).textContent ?? '').trim().replace(/\s+/g, ' '),
-            href: (anchor as HTMLAnchorElement).href,
-          }))
-          .filter((link) => link.text.length > 1 && link.text.length < 200 && link.href.startsWith('http') && !link.href.includes('javascript:'))
-          .slice(0, 40);
+          )).map(function (anchor) {
+            return {
+              text: (anchor.textContent || '').trim().replace(/\\s+/g, ' '),
+              href: anchor.href,
+            };
+          }).filter(function (link) {
+            return link.text.length > 1 && link.text.length < 200 && link.href.startsWith('http') && link.href.indexOf('javascript:') === -1;
+          }).slice(0, 40);
+          var seenHrefs = new Set(productLinks.map(function (link) { return link.href; }));
+          var navigationLinks = Array.from(document.querySelectorAll('a[href]')).map(function (anchor) {
+            return {
+              text: (anchor.textContent || '').trim().replace(/\\s+/g, ' '),
+              href: anchor.href,
+            };
+          }).filter(function (link) {
+            return link.text.length > 1 && link.text.length < 200 && link.href.startsWith('http') && link.href.indexOf('javascript:') === -1 && !seenHrefs.has(link.href);
+          }).slice(0, 20);
+          return productLinks.concat(navigationLinks);
+        }
+        return Array.from(document.querySelectorAll('a[href]')).map(function (anchor) {
+          return {
+            text: (anchor.textContent || '').trim().replace(/\\s+/g, ' '),
+            href: anchor.href,
+          };
+        }).filter(function (link) {
+          return link.text.length > 1 && link.text.length < 200 && link.href.startsWith('http') && link.href.indexOf('javascript:') === -1;
+        }).slice(0, 60);
+      })()`,
+    ) as { text: string; href: string; }[];
 
-        const seenHrefs = new Set(productLinks.map((link) => link.href));
-
-        const navigationLinks = Array.from(document.querySelectorAll('a[href]'))
-          .map((anchor) => ({
-            text: ((anchor as HTMLAnchorElement).textContent ?? '').trim().replace(/\s+/g, ' '),
-            href: (anchor as HTMLAnchorElement).href,
-          }))
-          .filter((link) => link.text.length > 1 && link.text.length < 200 && link.href.startsWith('http') && !link.href.includes('javascript:') && !seenHrefs.has(link.href))
-          .slice(0, 20);
-
-        return [...productLinks, ...navigationLinks];
-      }
-
-      return Array.from(document.querySelectorAll('a[href]'))
-        .map((anchor) => ({
-          text: ((anchor as HTMLAnchorElement).textContent ?? '').trim().replace(/\s+/g, ' '),
-          href: (anchor as HTMLAnchorElement).href,
-        }))
-        .filter((link) => link.text.length > 1 && link.text.length < 200 && link.href.startsWith('http') && !link.href.includes('javascript:'))
-        .slice(0, 60);
-    }, isMarketplacePage);
-
-    const pagination = await page.evaluate(() => {
-      const result: { text: string; href?: string; selector?: string; }[] = [];
-      const paginationSelectors = [
+    const pagination = await page.evaluate(`(() => {
+      var result = [];
+      var paginationSelectors = [
         '.pagination a', '.pager a', '[class*="pagin"] a', '[class*="pager"] a',
         'nav[aria-label*="страниц"] a', 'nav[aria-label*="page"] a',
         'a[aria-label*="след"]', 'a[aria-label*="next"]',
         '.next a', '.prev a', 'a.next', 'a.prev',
         '[class*="next"]', '[class*="prev"]',
       ];
-      const seen = new Set<string>();
-      for (const paginationSelector of paginationSelectors) {
-        document.querySelectorAll(paginationSelector).forEach((paginationElement) => {
-          const anchorElement = paginationElement.tagName === 'A' ? paginationElement as HTMLAnchorElement : paginationElement.querySelector('a');
-          const text = (paginationElement as HTMLElement).textContent?.trim().replace(/\s+/g, ' ') ?? '';
-          const href = anchorElement?.href ?? '';
+      var seen = new Set();
+      for (var psi = 0; psi < paginationSelectors.length; psi++) {
+        var paginationSelector = paginationSelectors[psi];
+        document.querySelectorAll(paginationSelector).forEach(function (paginationElement) {
+          var anchorElement = paginationElement.tagName === 'A' ? paginationElement : paginationElement.querySelector('a');
+          var text = ((paginationElement.textContent || '').trim().replace(/\\s+/g, ' ')) || '';
+          var href = anchorElement && anchorElement.href ? anchorElement.href : '';
           if (!text || seen.has(text + href)) return;
           seen.add(text + href);
-          result.push({ text, href: href || undefined });
+          result.push({ text: text, href: href || undefined });
         });
       }
       return result.slice(0, 20);
-    });
+    })()`) as { text: string; href?: string; selector?: string; }[];
 
-    const filters = await page.evaluate(() => {
-      const result: { label: string; type: 'select' | 'checkbox' | 'radio' | 'button'; selector: string; options?: string[]; }[] = [];
-
-      document.querySelectorAll('select').forEach((selectElement, selectIndex) => {
-        const label = selectElement.getAttribute('aria-label')
-          ?? selectElement.getAttribute('name')
-          ?? selectElement.id
-          ?? selectElement.closest('label')?.textContent?.trim()
-          ?? `select-${selectIndex}`;
-        const options = Array.from(selectElement.options).map((option) => option.text.trim()).filter(Boolean);
-        const selector = selectElement.id ? `#${CSS.escape(selectElement.id)}` : `select:nth-of-type(${selectIndex + 1})`;
-        result.push({ label: label.trim(), type: 'select', selector, options });
+    const filters = await page.evaluate(`(() => {
+      var result = [];
+      document.querySelectorAll('select').forEach(function (selectElement, selectIndex) {
+        var closestLabel = selectElement.closest('label');
+        var label = selectElement.getAttribute('aria-label') ||
+          selectElement.getAttribute('name') ||
+          selectElement.id ||
+          (closestLabel && closestLabel.textContent ? closestLabel.textContent.trim() : '') ||
+          ('select-' + selectIndex);
+        var options = Array.from(selectElement.options).map(function (option) { return option.text.trim(); }).filter(Boolean);
+        var selector = selectElement.id ? ('#' + CSS.escape(selectElement.id)) : ('select:nth-of-type(' + (selectIndex + 1) + ')');
+        result.push({ label: label.trim(), type: 'select', selector: selector, options: options });
       });
-
-      document.querySelectorAll('input[type="checkbox"]').forEach((checkboxElement, checkboxIndex) => {
-        const label = document.querySelector(`label[for="${checkboxElement.id}"]`)?.textContent?.trim()
-          ?? checkboxElement.closest('label')?.textContent?.trim()
-          ?? checkboxElement.getAttribute('name')
-          ?? `checkbox-${checkboxIndex}`;
+      document.querySelectorAll('input[type="checkbox"]').forEach(function (checkboxElement, checkboxIndex) {
+        var forLabel = document.querySelector('label[for="' + checkboxElement.id + '"]');
+        var closestCb = checkboxElement.closest('label');
+        var label = (forLabel && forLabel.textContent ? forLabel.textContent.trim() : '') ||
+          (closestCb && closestCb.textContent ? closestCb.textContent.trim() : '') ||
+          checkboxElement.getAttribute('name') ||
+          ('checkbox-' + checkboxIndex);
         if (!label || label.length > 100) return;
-        const selector = checkboxElement.id ? `#${CSS.escape(checkboxElement.id)}` : `input[type="checkbox"]:nth-of-type(${checkboxIndex + 1})`;
-        result.push({ label: label.trim(), type: 'checkbox', selector });
+        var selector = checkboxElement.id ? ('#' + CSS.escape(checkboxElement.id)) : ('input[type="checkbox"]:nth-of-type(' + (checkboxIndex + 1) + ')');
+        result.push({ label: label.trim(), type: 'checkbox', selector: selector });
       });
-
-      document.querySelectorAll('input[type="radio"]').forEach((radioElement, radioIndex) => {
-        const label = document.querySelector(`label[for="${radioElement.id}"]`)?.textContent?.trim()
-          ?? radioElement.closest('label')?.textContent?.trim()
-          ?? radioElement.getAttribute('name')
-          ?? `radio-${radioIndex}`;
-        if (!label || label.length > 100) return;
-        const selector = radioElement.id ? `#${CSS.escape(radioElement.id)}` : `input[type="radio"]:nth-of-type(${radioIndex + 1})`;
-        result.push({ label: label.trim(), type: 'radio', selector });
+      document.querySelectorAll('input[type="radio"]').forEach(function (radioElement, radioIndex) {
+        var forLabelR = document.querySelector('label[for="' + radioElement.id + '"]');
+        var closestR = radioElement.closest('label');
+        var labelR = (forLabelR && forLabelR.textContent ? forLabelR.textContent.trim() : '') ||
+          (closestR && closestR.textContent ? closestR.textContent.trim() : '') ||
+          radioElement.getAttribute('name') ||
+          ('radio-' + radioIndex);
+        if (!labelR || labelR.length > 100) return;
+        var selectorR = radioElement.id ? ('#' + CSS.escape(radioElement.id)) : ('input[type="radio"]:nth-of-type(' + (radioIndex + 1) + ')');
+        result.push({ label: labelR.trim(), type: 'radio', selector: selectorR });
       });
-
       return result.slice(0, 40);
-    });
+    })()`) as { label: string; type: 'select' | 'checkbox' | 'radio' | 'button'; selector: string; options?: string[]; }[];
 
     const pageUrl = page.url();
     const isShowcaptchaUrl = pageUrl.includes('showcaptcha') || pageUrl.includes('captcha.yandex');
-    const captchaDetected = isShowcaptchaUrl || await page.evaluate(() => {
-      const html = document.documentElement.innerHTML.toLowerCase();
-      const captchaSelectors = [
+    const captchaDetected = isShowcaptchaUrl || await page.evaluate(`(() => {
+      var html = document.documentElement.innerHTML.toLowerCase();
+      var captchaSelectors = [
         'iframe[src*="recaptcha"]', 'iframe[src*="captcha"]',
         'iframe[src*="turnstile"]', 'iframe[src*="hcaptcha"]',
         'iframe[src*="smartcaptcha"]',
         '.g-recaptcha', '#captcha', '.captcha', '[class*="captcha"]',
         '[id*="captcha"]', 'yandex-captcha', '.smartcaptcha',
       ];
-      const hasSelector = captchaSelectors.some((sel) => !!document.querySelector(sel));
-      const hasText = [
+      var hasSelector = captchaSelectors.some(function (sel) { return !!document.querySelector(sel); });
+      var hasText = [
         'captcha', 'recaptcha', 'hcaptcha',
         'i am not a robot', 'я не робот', 'подтвердите', 'verify you are human',
         'проверяем браузер', 'checking your browser', 'access denied',
         'cloudflare', 'cf-challenge', 'please wait', 'ddos-guard',
-      ].some((t) => html.includes(t));
+      ].some(function (t) { return html.indexOf(t) !== -1; });
       return hasSelector || hasText;
-    });
+    })()`);
 
     return { url: originalUrl, finalUrl, title, content, screenshot, buttons, links, pagination, filters, captchaDetected };
   };
@@ -1136,6 +1156,59 @@ export class PlaywrightTool {
       this.loggerService.info(this.TAG, `JS-challenge passed, landed on ${page.url()}`);
     } catch {
       this.loggerService.warn(this.TAG, `JS-challenge wait timed out for ${page.url()}`);
+    }
+  };
+
+  /**
+   * Ожидает рендера контента на React/SPA сайтах бронирования отелей.
+   * Аналог WB/Ozon marketplace-ожидания — networkidle срабатывает раньше,
+   * чем React успевает отрисовать карточки отелей.
+   */
+  private waitForHotelSpaContent = async (page: Page, url: string): Promise<void> => {
+    const isHotelSite = url.includes('ostrovok.ru') || url.includes('101hotel.ru') || url.includes('tvil.ru') || url.includes('sutochno.ru');
+    if (!isHotelSite) {
+      return;
+    }
+
+    // Страницы-списки (city-level) и страницы конкретных отелей требуют разных селекторов
+    const listPageSelectors = [
+      '[data-selenium="hotel-card"]',
+      '[class*="HotelCard"]',
+      '[class*="hotel-card"]',
+      '[class*="hotelCard"]',
+      '[class*="zencard"]',
+      '[class*="PropertyCard"]',
+      '[class*="hotel-item"]',
+    ].join(', ');
+
+    // Для страниц конкретного отеля — ждём заголовок или номера
+    const detailPageSelectors = [
+      'h1',
+      '[class*="RoomCard"]',
+      '[class*="room-card"]',
+      '[class*="roomCard"]',
+      '[class*="HotelInfo"]',
+      '[class*="BookingCard"]',
+      '[data-selenium="room"]',
+    ].join(', ');
+
+    // Определяем тип страницы по глубине URL-пути
+    const urlPath = (() => { try { return new URL(url).pathname; } catch { return url; } })();
+    const pathSegments = urlPath.split('/').filter(Boolean);
+    // Страница конкретного отеля: /hotel/russia/{город}/{слаг}/  — 4+ сегмента
+    const isDetailPage = pathSegments.length >= 4;
+
+    const selectors = isDetailPage
+      ? `${detailPageSelectors}, ${listPageSelectors}`
+      : listPageSelectors;
+
+    try {
+      await page.waitForSelector(selectors, { timeout: 12000 });
+      this.loggerService.info(this.TAG, `Hotel SPA content rendered on ${page.url()}`);
+    } catch {
+      // Если ничего не появилось — даём ещё 3 сек и продолжаем с тем что есть
+      this.loggerService.warn(this.TAG, `Hotel SPA content wait timed out for ${url}, continuing`);
+      await page.waitForTimeout(3000);
     }
   };
 }

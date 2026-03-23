@@ -1,6 +1,6 @@
 # Assistent Bot
 
-Telegram-бот на TypeScript с мультиагентной архитектурой на основе LangGraph. Умеет искать вакансии на hh.ru, работать в браузере (покупки, туры, новости, любые сайты), ставить напоминания, отвечать на общие вопросы, распознавать голос и изображения.
+Telegram-бот на TypeScript с мультиагентной архитектурой на основе LangGraph. Умеет искать вакансии на hh.ru, работать в браузере (покупки, туры, новости, любые сайты), сравнивать товары по реальным отзывам, ставить напоминания, отвечать на общие вопросы, распознавать голос и изображения.
 
 ## Стек
 
@@ -39,8 +39,6 @@ TELEGRAM_PROXY_PASS=
 # LLM (OpenAI-совместимый endpoint)
 LLM_BASE_URL=                # например https://routerai.ru/api/v1
 LLM_API_KEY=                 # ключ API
-LLM_MODEL_NAME=              # модель по умолчанию
-LLM_TEMPERATURE=0.7          # температура (0–1)
 
 # База данных
 DB=LOCAL                     # LOCAL или HOST
@@ -108,12 +106,13 @@ src/
 │   └── database.service.ts
 ├── services/
 │   ├── agents/
-│   │   ├── manager.agent.ts        # роутер запросов
-│   │   ├── general.agent.ts        # общие вопросы
-│   │   ├── browser.agent.ts        # веб-браузер (покупки, поиск, сайты)
-│   │   ├── job-search.agent.ts     # поиск работы (hh.ru)
-│   │   ├── tours-hotels.agent.ts   # туры и отели (веб-ресёрч)
-│   │   └── reminder.agent.ts       # напоминания
+│   │   ├── manager.agent.ts            # роутер запросов
+│   │   ├── general.agent.ts            # общие вопросы
+│   │   ├── browser.agent.ts            # веб-браузер (покупки, поиск, сайты)
+│   │   ├── job-search.agent.ts         # поиск работы (hh.ru)
+│   │   ├── tours-hotels.agent.ts       # туры и отели (веб-ресёрч)
+│   │   ├── product-comparison.agent.ts # сравнение товаров по отзывам
+│   │   └── reminder.agent.ts           # напоминания
 │   ├── telegram/
 │   │   ├── telegram-bot.service.ts
 │   │   ├── telegram-bot-command.service.ts
@@ -163,7 +162,8 @@ PostgreSQL, схема `assistent_bot`:
 |---|---|
 | `browser_agent` | поиск в интернете, покупки (WB, Ozon, AliExpress), туры, авиабилеты, отели, сравнение цен, любые действия в браузере |
 | `job_search_agent` | работа, вакансия, резюме, зарплата, hh.ru |
-| `tours_hotels_agent` | конкретный туристический сайт (ostrovok, booking) или детальный веб-ресёрч туров |
+| `tours_hotels_agent` | конкретный туристический сайт (ostrovok, 101hotel, booking) или детальный веб-ресёрч туров |
+| `product_comparison_agent` | сравни, что лучше, отзывы на, плюсы и минусы, vs/versus, выбрать между двумя товарами |
 | `reminder_agent` | напомни, поставь напоминание, через X минут/часов |
 | `general_agent` | всё остальное |
 

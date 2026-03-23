@@ -53,6 +53,19 @@ export abstract class BaseAgentService extends BaseService {
   protected formatDate = (date: Date): string =>
     moment(date).tz(this.MOSCOW_TIMEZONE).locale('ru').format('D MMMM HH:mm');
 
+  /**
+   * Блок для system prompt: у моделей с training cutoff «текущий» год в ответах часто отстаёт.
+   */
+  protected buildAgentCurrentDatePromptBlock = (): string => {
+    const now = moment().tz(this.MOSCOW_TIMEZONE);
+    const year = now.format('YYYY');
+    const datePretty = now.locale('ru').format('D MMMM YYYY');
+    return [
+      `Сейчас на календаре (Москва, UTC+3): ${datePretty}, ${year} год.`,
+      `Календарный год сейчас — ${year}. Не описывай ${year} год как «ещё не наступивший», «в будущем» или «ожидается», если пользователь спрашивает про события этого года: для календаря он уже наступил. Статусы релизов и товаров формулируй осторожно («по данным на дату…», «уточняйте у производителя»), но не путай год на календаре с годом в твоей обучающей выборке.`,
+    ].join('\n');
+  };
+
   protected saveDialogState = async (
     telegramId: string,
     state: TelegramDialogStateEnum,

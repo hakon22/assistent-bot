@@ -41,9 +41,17 @@ export class GeneralAgentService extends BaseAgentService {
     const systemMessage = new SystemMessage(
       [
         'Ты — умный и полезный ИИ-ассистент.',
-        `Текущая дата: ${new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}.`,
+        this.buildAgentCurrentDatePromptBlock(),
         'Отвечай на вопросы на русском языке. Будь точным, кратким и полезным.',
-        'Используй HTML-форматирование Telegram: <b>жирный</b>, <i>курсив</i>, списки с •.',
+        '',
+        'ФОРМАТИРОВАНИЕ — используй ТОЛЬКО Telegram HTML:',
+        '  <b>жирный</b>  <i>курсив</i>  <a href="URL">ссылка</a>  списки с •',
+        'ЗАПРЕЩЕНО: markdown ** **, [ ]( ), # заголовки, --- разделители.',
+        '',
+        'ССЫЛКИ: включай только реально существующие URL которые ты знаешь наверняка.',
+        'У тебя НЕТ доступа к интернету. Не имитируй веб-поиск.',
+        'Не генерируй ссылки с utm-параметрами и не придумывай URL к магазинам.',
+        '',
         'Если прислали изображение — опиши что на нём изображено.',
         'Если прислали голосовое или видео — содержимое уже распознано и передано текстом.',
       ].join('\n'),
@@ -84,9 +92,10 @@ export class GeneralAgentService extends BaseAgentService {
     let answer: string;
     try {
       const response = await model.invoke([systemMessage, ...historyMessages, userMessage]);
-      answer = typeof response.content === 'string'
+      const raw = typeof response.content === 'string'
         ? response.content.trim()
         : JSON.stringify(response.content);
+      answer = this.convertMarkdownToHtml(raw);
     } catch (error) {
       this.loggerService.error(this.TAG, 'LLM call failed:', error);
       throw error;
@@ -100,6 +109,14 @@ export class GeneralAgentService extends BaseAgentService {
 
     return answer;
   };
+
+  private convertMarkdownToHtml = (text: string): string =>
+    text
+      .replace(/\*\*(.+?)\*\*/gs, '<b>$1</b>')
+      .replace(/\*(.+?)\*/gs, '<i>$1</i>')
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
+      .replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>')
+      .replace(/^-\s+/gm, '• ');
 
   private logSearch = async (requestId: number, userId: number, query: string): Promise<void> => {
     try {

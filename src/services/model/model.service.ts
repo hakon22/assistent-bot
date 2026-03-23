@@ -7,9 +7,9 @@ export class ModelService {
 
   private readonly apiKey = process.env.LLM_API_KEY ?? '';
 
-  private readonly modelName = process.env.LLM_MODEL_NAME ?? 'google/gemini-3.1-flash-lite-preview';
+  private readonly modelName = 'google/gemini-3.1-flash-lite-preview';
 
-  private readonly temperature = Number(process.env.LLM_TEMPERATURE ?? 0.7);
+  private readonly temperature = 0.7;
 
   public getChatModel = (temperature?: number, modelId?: string | null): ChatOpenAI => {
     return new ChatOpenAI({

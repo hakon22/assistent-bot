@@ -6,6 +6,17 @@ import type { Context } from 'telegraf';
 
 import { LoggerService } from '@/services/app/logger.service';
 
+// Теги, которые поддерживает Telegram HTML-парсер
+const ALLOWED_TELEGRAM_TAGS = new Set(['b', 'i', 'u', 's', 'strike', 'del', 'code', 'pre', 'a', 'tg-spoiler', 'tg-emoji']);
+
+const sanitizeTelegramHtml = (text: string): string =>
+  text.replace(/<\/?([a-zA-Z][a-zA-Z0-9-]*)(?:\s[^>]*)?\s*\/?>/g, (match, tagName: string) => {
+    if (ALLOWED_TELEGRAM_TAGS.has(tagName.toLowerCase())) {
+      return match;
+    }
+    return '';
+  });
+
 @Singleton
 export class TelegramBotService {
   private readonly TAG = 'TelegramBotService';
@@ -54,7 +65,7 @@ export class TelegramBotService {
 
   public sendMessage = async (text: string, telegramId: string, options?: ExtraReplyMessage) => {
     try {
-      return this.getBot().telegram.sendMessage(telegramId, text, {
+      return this.getBot().telegram.sendMessage(telegramId, sanitizeTelegramHtml(text), {
         parse_mode: 'HTML',
         ...options,
       });
@@ -64,9 +75,23 @@ export class TelegramBotService {
     }
   };
 
-  public editMessage = async (text: string, telegramId: string, messageId: number, options?: ExtraEditMessageText) => {
+  /** Обновить только inline-клавиатуру (например callback_data после появления requestId). */
+  public editMessageReplyMarkup = async (
+    telegramId: string,
+    messageId: number,
+    replyMarkup: { inline_keyboard: { text: string; callback_data: string; }[][]; },
+  ): Promise<void> => {
     try {
-      return await this.getBot().telegram.editMessageText(telegramId, messageId, undefined, text, {
+      await this.getBot().telegram.editMessageReplyMarkup(telegramId, messageId, undefined, replyMarkup);
+    } catch (error) {
+      this.loggerService.debug(this.TAG, 'editMessageReplyMarkup failed', error);
+    }
+  };
+
+  public editMessage = async (text: string, telegramId: string, messageId: number, options?: ExtraEditMessageText) => {
+    const sanitizedText = sanitizeTelegramHtml(text);
+    try {
+      return await this.getBot().telegram.editMessageText(telegramId, messageId, undefined, sanitizedText, {
         parse_mode: 'HTML',
         ...options,
       });
@@ -79,7 +104,7 @@ export class TelegramBotService {
       // Для любой другой ошибки (например, Can't parse entities) — отправляем новым сообщением
       this.loggerService.warn(this.TAG, `editMessage failed, falling back to sendMessage: ${description}`);
       try {
-        await this.getBot().telegram.sendMessage(telegramId, text, { parse_mode: 'HTML' });
+        await this.getBot().telegram.sendMessage(telegramId, sanitizedText, { parse_mode: 'HTML' });
       } catch (sendError: any) {
         this.loggerService.error(this.TAG, 'sendMessage fallback also failed', sendError);
       }

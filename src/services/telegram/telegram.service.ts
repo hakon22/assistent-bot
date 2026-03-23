@@ -60,6 +60,14 @@ export class TelegramService {
     return this.telegramBotService.editMessage(text, telegramId, messageId, options);
   };
 
+  public editMessageReplyMarkup = async (
+    telegramId: string,
+    messageId: number,
+    replyMarkup: { inline_keyboard: { text: string; callback_data: string; }[][]; },
+  ): Promise<void> => {
+    await this.telegramBotService.editMessageReplyMarkup(telegramId, messageId, replyMarkup);
+  };
+
   public sendAdminMessages = async (message: string | string[], options?: ExtraReplyMessage) => {
     for (const tgId of [process.env.TELEGRAM_CHAT_ID].filter(Boolean)) {
       const adminUser = await UserEntity.findOne({ select: ['id', 'telegramId'], where: { telegramId: tgId } });

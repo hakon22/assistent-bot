@@ -57,10 +57,8 @@ npm run lint                  # ESLint
 | `DB` | `LOCAL` or `HOST` |
 | `LLM_BASE_URL` | LLM API endpoint |
 | `LLM_API_KEY` | LLM key |
-| `LLM_MODEL_NAME` | Default model |
 | `YANDEX_SEARCH_API_KEY` | Yandex Search |
 | `YANDEX_VOICE_API_KEY` | Yandex STT |
-| `PROXY_HOST/USER/PASS` | SOCKS5 proxy (optional) |
 
 ## Database
 - Schema: `assistent_bot`

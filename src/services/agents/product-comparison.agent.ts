@@ -13,15 +13,18 @@ import { WebResearchLogEntity } from '@/db/entities/web-research-log.entity';
 import { SearchHistoryEntity } from '@/db/entities/search-history.entity';
 import { UserEntity } from '@/db/entities/user.entity';
 
-const MAX_ITERATIONS = 30;
-const TIMEOUT_MS = 10 * 60 * 1000; // 10 минут
-const PREFERRED_HOTELS = 'ostrovok.ru, 101hotel.ru, tvil.ru, sutochno.ru, yandex.ru/travel';
+const MAX_ITERATIONS = 40;
+const TIMEOUT_MS = 12 * 60 * 1000; // 12 минут
+const REVIEW_SITES = 'otzovik.com, irecommend.ru, market.yandex.ru, dns-shop.ru, mvideo.ru, wildberries.ru, ozon.ru, drom.ru, 4pda.to';
 
+/** Префикс служебных HumanMessage — если модель ответила без tool_calls, граф уходит в nudge. */
 const TOOL_NUDGE_PREFIX = '[Система]';
 const MAX_TOOL_NUDGES_PER_RUN = 8;
 
 const getAiMessagePlainText = (message: AIMessage): string => {
-  if (typeof message.content === 'string') return message.content;
+  if (typeof message.content === 'string') {
+    return message.content;
+  }
   if (Array.isArray(message.content)) {
     return (message.content as { type: string; text?: string; }[])
       .filter((block) => block.type === 'text')
@@ -36,18 +39,19 @@ const countToolNudgesInMessages = (messages: (typeof MessagesAnnotation.State)['
     (message) => message instanceof HumanMessage && typeof message.content === 'string' && message.content.startsWith(TOOL_NUDGE_PREFIX),
   ).length;
 
-const looksLikeFinalToursAnswer = (text: string): boolean => {
+const looksLikeFinalProductComparisonAnswer = (text: string): boolean => {
   const trimmed = text.trim();
   if (!trimmed.length) return false;
-  if (/не удалось|не найден[оы]?\s+(подходящ|вариант)|сайт\s+недоступн/i.test(trimmed) && trimmed.length < 800) return true;
-  if (trimmed.includes('<a href') && trimmed.length >= 500) return true;
-  if (/<b>[\s\S]*<\/b>/i.test(trimmed) && /отел|гостиниц|номер|проживан|бронирован/i.test(trimmed) && trimmed.length >= 450) {
+  if (/<b>\s*вывод/i.test(trimmed)) return true;
+  if (/<b>\s*сравнение/i.test(trimmed)) return true;
+  if (trimmed.length >= 1200 && trimmed.includes('•') && trimmed.includes('<b>')) return true;
+  if (/сравнение невозможно|не удалось\s+(собрать|найти|получить)\s+данн|отзывов\s+не\s+найден/i.test(trimmed) && trimmed.length < 900) {
     return true;
   }
   return false;
 };
 
-export interface ToursHotelsAgentInput {
+export interface ProductComparisonAgentInput {
   telegramId: string;
   userId: number;
   requestId: number;
@@ -57,10 +61,10 @@ export interface ToursHotelsAgentInput {
 }
 
 @Singleton
-export class ToursHotelsAgentService extends BaseAgentService {
-  protected readonly TAG = 'ToursHotelsAgentService';
+export class ProductComparisonAgentService extends BaseAgentService {
+  protected readonly TAG = 'ProductComparisonAgentService';
 
-  protected readonly AGENT_NAME = 'tours_hotels_agent';
+  protected readonly AGENT_NAME = 'product_comparison_agent';
 
   private readonly modelService = Container.get(ModelService);
 
@@ -68,15 +72,16 @@ export class ToursHotelsAgentService extends BaseAgentService {
 
   private readonly yandexSearchTool = Container.get(YandexSearchTool);
 
-  public process = async (input: ToursHotelsAgentInput): Promise<string> => {
+  public process = async (input: ProductComparisonAgentInput): Promise<string> => {
     const { telegramId, userId, requestId, messageText, modelId, onStatusUpdate } = input;
 
-    this.loggerService.info(this.TAG, 'Tours/hotels agent started', { requestId, messageText });
+    this.loggerService.info(this.TAG, 'Product comparison agent started', { requestId, messageText });
 
     const log = new WebResearchLogEntity();
     log.request = { id: requestId } as RequestEntity;
     log.user = { id: userId } as UserEntity;
     log.goal = messageText;
+    log.agentName = this.AGENT_NAME;
     log.iterations = 0;
     log.pagesFetched = 0;
     log.searchesDone = 0;
@@ -93,13 +98,13 @@ export class ToursHotelsAgentService extends BaseAgentService {
       const errorMessage = error instanceof Error ? error.message : String(error);
       const isTimeout = errorMessage === 'Timeout';
       const isToolUnsupported = errorMessage.includes('tool use') || errorMessage.includes('tool_use');
-      this.loggerService.error(this.TAG, isTimeout ? 'Agent timeout (10min)' : 'Agent loop failed:', error);
+      this.loggerService.error(this.TAG, isTimeout ? 'Agent timeout (12min)' : 'Agent loop failed:', error);
       if (isTimeout) {
-        result = 'Поиск занял слишком много времени. Попробуйте уточнить запрос.';
+        result = 'Сравнение заняло слишком много времени. Попробуйте уточнить запрос или уменьшить количество товаров.';
       } else if (isToolUnsupported) {
-        result = 'Выбранная модель не поддерживает агентный поиск в интернете. Переключитесь на другую модель через /model.';
+        result = 'Выбранная модель не поддерживает сравнение товаров. Переключитесь на другую модель через /model.';
       } else {
-        result = 'Произошла ошибка при поиске. Попробуйте позже.';
+        result = 'Произошла ошибка при сравнении товаров. Попробуйте позже.';
       }
     }
 
@@ -109,9 +114,27 @@ export class ToursHotelsAgentService extends BaseAgentService {
     await this.logSearch(requestId, userId, messageText);
     await this.saveHistory(telegramId, userId, requestId, messageText, result);
 
-    this.loggerService.info(this.TAG, 'Tours/hotels agent completed', { requestId, iterations: log.iterations, pagesFetched: log.pagesFetched });
+    this.loggerService.info(this.TAG, 'Product comparison agent completed', { requestId, iterations: log.iterations, pagesFetched: log.pagesFetched });
 
     return result;
+  };
+
+  private extractAgentThought = (response: AIMessage): string => {
+    let raw = '';
+    if (typeof response.content === 'string') {
+      raw = response.content;
+    } else if (Array.isArray(response.content)) {
+      raw = (response.content as { type: string; text?: string; }[])
+        .filter((block) => block.type === 'text')
+        .map((block) => block.text ?? '')
+        .join(' ');
+    }
+    return raw
+      .replace(/<think(?:ing)?[\s\S]*?<\/think(?:ing)?>/gi, '')
+      .replace(/<think(?:ing)?[\s\S]*/gi, '')
+      .split('\n')
+      .map((line) => line.trim())
+      .find((line) => line.length > 10) ?? '';
   };
 
   private formatPageResult = (url: string, result: Awaited<ReturnType<PlaywrightTool['browse']>>): string => {
@@ -152,34 +175,16 @@ export class ToursHotelsAgentService extends BaseAgentService {
     }
 
     parts.push(
-      '\n=== ФОРМЫ, ДАТЫ, ГОСТИ (browse_page.actions) ===',
-      'Город, даты, гости: fill_placeholder / fill_label / fill_selector по скриншоту и селекторам из ФИЛЬТРОВ; select_option для выпадающих списков; set_checked для чекбоксов.',
-      'После ввода дат часто нужен press_key Enter или click_text «Найти»/«Показать». Цепочку действий передавай в одном вызове browse_page.',
+      '\n=== ФОРМЫ И ВВОД (действия browse_page.actions) ===',
+      'Поля: fill_placeholder (как написано в placeholder на странице), fill_selector (#id из ФИЛЬТРОВ/разметки), fill_label (подпись рядом с полем).',
+      'Списки: select_option. Флажки: set_checked. После ввода часто press_key Enter (с selector поля или без).',
+      'Клики: click_selector по селекторам из КНОПОК и ФИЛЬТРОВ; открытые календари — click_text по числу или цепочка fill + Enter.',
     );
 
     return parts.join('\n').substring(0, 12000);
   };
 
-  private extractAgentThought = (response: AIMessage): string => {
-    let raw = '';
-    if (typeof response.content === 'string') {
-      raw = response.content;
-    } else if (Array.isArray(response.content)) {
-      raw = (response.content as { type: string; text?: string; }[])
-        .filter((block) => block.type === 'text')
-        .map((block) => block.text ?? '')
-        .join(' ');
-    }
-    return raw
-      .replace(/<think(?:ing)?[\s\S]*?<\/think(?:ing)?>/gi, '')
-      .replace(/<think(?:ing)?[\s\S]*/gi, '')
-      .split('\n')
-      .map((line) => line.trim())
-      .find((line) => line.length > 10) ?? '';
-  };
-
   private runGraph = async (goal: string, log: WebResearchLogEntity, modelId?: string | null, onStatusUpdate?: (text: string) => Promise<void>): Promise<string> => {
-    // Скриншот последней открытой страницы — передаётся в toolsNode как изображение
     let latestScreenshot: string | null = null;
 
     // Персистентная сессия — cookies и JS-состояние сохраняются между вызовами browse_page
@@ -187,7 +192,7 @@ export class ToursHotelsAgentService extends BaseAgentService {
 
     const browsePageTool = new DynamicStructuredTool({
       name: 'browse_page',
-      description: 'Открыть страницу и выполнить цепочку действий: клики, формы (поля дат, гостей, поиск), select/checkbox, клавиши, скролл. Возвращает контент, кнопки, фильтры с селекторами, пагинацию.',
+      description: 'Открыть страницу и выполнить цепочку действий в браузере: клики, заполнение форм, select/checkbox, клавиши, скролл. Возвращает контент, кнопки, фильтры с селекторами, пагинацию и скриншот.',
       schema: z.object({
         url: z.string().describe('URL страницы'),
         auto_scroll: z.boolean().optional().describe('Прокрутить страницу для lazy-загрузки (по умолчанию true)'),
@@ -211,15 +216,15 @@ export class ToursHotelsAgentService extends BaseAgentService {
           text: z.string().optional().describe('Для click_text: текст кнопки или ссылки'),
           selector: z.string().optional().describe('Для click_selector, fill_selector, select_option, hover, press_key, set_checked: CSS-селектор'),
           placeholder: z.string().optional().describe('Для fill_placeholder: текст placeholder поля'),
-          label: z.string().optional().describe('Для fill_label: подпись поля на странице'),
-          value: z.string().optional().describe('Для fill_* и select_option: значение'),
-          key: z.string().optional().describe('Для press_key: Enter, Tab, Escape…'),
-          checked: z.boolean().optional().describe('Для set_checked'),
-          x: z.number().optional().describe('Для click_coords: координата X на скриншоте'),
-          y: z.number().optional().describe('Для click_coords: координата Y на скриншоте'),
+          label: z.string().optional().describe('Для fill_label: подпись поля (как видит пользователь)'),
+          value: z.string().optional().describe('Для fill_*, select_option: значение'),
+          key: z.string().optional().describe('Для press_key: Enter, Tab, Escape, Backspace и т.д.'),
+          checked: z.boolean().optional().describe('Для set_checked: true/false'),
+          x: z.number().optional().describe('Для click_coords: координата X'),
+          y: z.number().optional().describe('Для click_coords: координата Y'),
           pixels: z.number().optional().describe('Для scroll_px: количество пикселей'),
           milliseconds: z.number().optional().describe('Для wait: миллисекунды'),
-        })).optional().describe('Действия после загрузки (по порядку)'),
+        })).optional().describe('Цепочка действий после загрузки URL (выполняются по порядку)'),
       }),
       func: async ({ url, auto_scroll, actions }) => {
         try {
@@ -230,7 +235,6 @@ export class ToursHotelsAgentService extends BaseAgentService {
           const hostname = (() => { try { return new URL(url).hostname; } catch { return url; } })();
           await onStatusUpdate?.(`Читаю: ${hostname}`).catch(() => undefined);
 
-          // Нормализуем плоские action-объекты в типизированные PageAction
           const pageActions: PageAction[] = (actions ?? []).map((rawAction) => {
             switch (rawAction.type) {
             case 'click_text': return { type: 'click_text', value: rawAction.text ?? rawAction.value ?? '' };
@@ -267,7 +271,7 @@ export class ToursHotelsAgentService extends BaseAgentService {
 
     const searchWebTool = new DynamicStructuredTool({
       name: 'search_web',
-      description: 'Поиск через Яндекс. Используй когда нужно найти сайт или прямой доступ не работает.',
+      description: 'Поиск через Яндекс. Используй для нахождения страниц с отзывами на конкретный товар.',
       schema: z.object({
         query: z.string().describe('Поисковый запрос'),
       }),
@@ -279,14 +283,13 @@ export class ToursHotelsAgentService extends BaseAgentService {
 
           await onStatusUpdate?.(`Ищу: ${query.substring(0, 80)}`).catch(() => undefined);
 
-          // Yandex Search API (с кэшированием)
           const apiResults = await this.yandexSearchTool.search(query, 10).catch(() => []);
           if (apiResults.length) {
             const lines = apiResults.map((searchResult) => `${searchResult.title}\n${searchResult.url}\n${searchResult.snippet}`).join('\n\n');
             return `Результаты поиска по запросу «${query}»:\n\n${lines}`;
           }
 
-          return `Поиск по запросу «${query}» не дал результатов. Попробуй открыть целевой сайт напрямую через browse_page.`;
+          return `Поиск по запросу «${query}» не дал результатов. Попробуй изменить запрос или открыть сайт напрямую через browse_page.`;
         } catch (error) {
           return `Ошибка поиска: ${error instanceof Error ? error.message : String(error)}`;
         }
@@ -296,65 +299,92 @@ export class ToursHotelsAgentService extends BaseAgentService {
     const tools: StructuredToolInterface[] = [browsePageTool, searchWebTool];
 
     const systemPrompt = [
-      'Ты — веб-агент для подбора туров и отелей.',
+      'Ты — агент сравнения товаров.',
       this.buildAgentCurrentDatePromptBlock(),
-      'Твоя задача: найти для пользователя конкретные отели, туры или услуги с прямыми ссылками для бронирования.',
-      `Предпочтительные сайты: ${PREFERRED_HOTELS}.`,
+      'Твоя задача: сравнить несколько товаров на основе РЕАЛЬНЫХ отзывов из интернета.',
       '',
       '## ИНСТРУМЕНТЫ',
       '',
-      '**browse_page** — открывает URL и может выполнить цепочку actions в одном вызове.',
-      'Возвращает текст страницы, ФИЛЬТРЫ и КНОПКИ с готовыми CSS-селекторами, ссылки и скриншот.',
-      'Доступные actions: клики (текст/селектор/координаты), fill_placeholder, fill_selector, fill_label, select_option, set_checked, hover, press_key, скролл, wait.',
-      'Если URL с датами невозможен — заполняй форму на сайте этими действиями; смотри скриншот и секции ФИЛЬТРЫ/КНОПКИ в ответе инструмента.',
-      'Cookies и сессия сохраняются между вызовами browse_page.',
-      'Когда возможно — передавай даты через URL (быстрее форм).',
+      '### browse_page — реальный браузер Chromium',
+      'Использует прокси и обход антибот-защит. В одном вызове: открыть URL и выполнить цепочку actions (клики, заполнение полей, select, чекбоксы, press_key, скролл).',
+      'Возвращает текст страницы, ФИЛЬТРЫ с готовыми CSS-селекторами, кнопки, ссылки и скриншот.',
+      'После каждого вызова анализируй скриншот и секции ФИЛЬТРЫ/КНОПКИ — опирайся на селекторы оттуда, не придумывай.',
       '',
-      '**search_web** — поиск через Яндекс. Используй чтобы найти URL нужного сайта или страницы.',
+      '### search_web — поиск через Яндекс',
+      'Применяй для нахождения страниц с отзывами на конкретный товар.',
       '',
-      '## ДАТЫ В URL — ВСЕГДА ИСПОЛЬЗУЙ ЭТО ВМЕСТО ФОРМ',
+      '## ПРАВИЛО №1 — НЕ ПРИДУМЫВАЙ URL',
+      'Допустимые URL — ТОЛЬКО из этих источников:',
+      '  • секция ССЫЛКИ из browse_page',
+      '  • поле url из search_web',
+      'Ты НЕ знаешь реальных адресов страниц отзывов. Не конструируй пути, не угадывай.',
+      'Перед включением ссылки в ответ задай себе: "Из какого именно ответа инструмента я взял этот URL?"',
+      'Не можешь ответить точно → ссылку удалить.',
       '',
-      'ostrovok.ru — список отелей города с датами:',
-      '  https://ostrovok.ru/hotel/russia/{город}/?checkin=YYYY-MM-DD&checkout=YYYY-MM-DD',
-      '  Пример: https://ostrovok.ru/hotel/russia/gelendzhik/?checkin=2025-09-30&checkout=2025-10-02',
+      '## СТРАТЕГИЯ СРАВНЕНИЯ',
       '',
-      'ostrovok.ru — конкретный отель с датами:',
-      '  https://ostrovok.ru/hotel/russia/{город}/{слаг}/?checkin=YYYY-MM-DD&checkout=YYYY-MM-DD',
-      '  Пример: https://ostrovok.ru/hotel/russia/gelendzhik/otel_solo/?checkin=2025-09-30&checkout=2025-10-02',
+      'Шаг 1: Выдели список товаров для сравнения из запроса пользователя.',
+      'Шаг 2: Обработай каждый товар ПОСЛЕДОВАТЕЛЬНО — сначала полностью исследуй первый, потом второй.',
       '',
-      'tvil.ru — список:',
-      '  https://tvil.ru/{город}/?date_in=DD.MM.YYYY&date_out=DD.MM.YYYY',
+      'Для КАЖДОГО товара:',
+      '  1. search_web("[название товара] отзывы") → получи список страниц с отзывами.',
+      '  2. browse_page(лучший URL из приоритетных сайтов) → извлеки реальные плюсы, минусы, цитаты.',
+      '  3. Прокрути вниз если отзывов мало на первом экране (scroll_bottom).',
+      '  4. Если отзывов < 5 или страница недоступна → search_web("[товар] обзор недостатки плюсы") → ещё browse_page.',
+      '  5. Повтори шаги 1–4 для следующего товара.',
       '',
-      'Предпочитай передавать даты через URL — быстрее и надёжнее заполнения форм.',
+      'Шаг 3: После сбора данных по всем товарам → сформируй итоговый сравнительный ответ.',
       '',
-      '## КАК ДЕЙСТВОВАТЬ',
-      'На каждом шаге смотри на скриншот и текст страницы, и спрашивай себя:',
-      '  "Что мне нужно сделать прямо сейчас, чтобы приблизиться к цели?"',
+      '## ПРИОРИТЕТНЫЕ САЙТЫ ДЛЯ ОТЗЫВОВ',
+      `${REVIEW_SITES}`,
+      'Предпочитай эти сайты при выборе URL для browse_page.',
+      'Яндекс.Маркет (market.yandex.ru) — ценен: оценки, блоки "Достоинства"/"Недостатки", тысячи отзывов.',
+      'Отзовик (otzovik.com) и iRecommend (irecommend.ru) — развёрнутые пользовательские отзывы с секциями "Плюсы"/"Минусы".',
+      'DNS (dns-shop.ru) и М.Видео (mvideo.ru) — для техники: верифицированные покупатели.',
+      'Drom.ru — для автотоваров (шины, аккумуляторы, масла).',
+      '4PDA (4pda.to) — для гаджетов: обсуждения и реальный опыт.',
       '',
-      'Примеры правильных решений:',
-      '• Нужны отели с датами → сразу открывай URL с ?checkin=...&checkout=... параметрами.',
-      '• Страница пустая или белая → перейди на другой сайт из списка.',
-      '• Нет результатов под запрос → примени фильтры или измени поисковый запрос.',
-      '• Видишь список отелей → открой несколько для получения прямых ссылок и деталей.',
-      '• Сайт заблокировал доступ → переходи на следующий из списка предпочтительных сайтов.',
+      '## КАК ЧИТАТЬ СТРАНИЦУ ОТЗЫВОВ',
+      '• На Яндекс.Маркет: ищи блоки "Достоинства" / "Недостатки" в каждом отзыве.',
+      '• На Отзовик / iRecommend: ищи секции "Плюсы" и "Минусы".',
+      '• Если отзывов мало — прокрути вниз через action scroll_bottom.',
+      '• Если страница требует авторизации или показывает капчу — перейди к следующему сайту из search_web.',
       '',
-      '## ЕДИНСТВЕННОЕ ЖЁСТКОЕ ПРАВИЛО — ТОЛЬКО РЕАЛЬНЫЕ URL',
-      'Каждая ссылка в финальном ответе должна быть получена из инструмента:',
-      '  • секция ССЫЛКИ из browse_page, или',
-      '  • поле url из search_web.',
+      '## ЧТО ИЗВЛЕКАТЬ ПО КАЖДОМУ ТОВАРУ',
+      '- Общая оценка (если есть числовая или звёздочная)',
+      '- Топ-3 достоинства (которые встречаются в нескольких отзывах)',
+      '- Топ-3 недостатка (которые встречаются в нескольких отзывах)',
+      '- 1–2 характерные цитаты реальных пользователей (1–2 предложения)',
+      '- Текущая цена или ценовой диапазон — ОБЯЗАТЕЛЬНО. Ищи на страницах отзывов или в поисковой выдаче.',
+      '  Если на странице нет цены — выполни search_web("[товар] цена купить") и возьми из первого результата.',
       '',
-      'Ты знаешь паттерны URL многих сайтов (ostrovok.ru/hotel/russia/{город}/{слаг}/ и т.п.).',
-      'Конструировать URL по паттерну — ЗАПРЕЩЕНО, даже если ты уверен в правильности слага.',
-      'Если страница вернула пустой контент — у тебя нет ни одной реальной ссылки с этого сайта.',
-      '',
-      'Перед каждой ссылкой в ответе задай себе: "Из какого конкретного ответа инструмента я взял этот URL?"',
-      'Не можешь ответить точно → ссылку убрать. Лучше 2 проверенные ссылки, чем 5 придуманных.',
+      '## ВАЖНО',
+      '- Используй ТОЛЬКО реальные данные из посещённых страниц. Не придумывай мнения.',
+      '- Если на странице нет явных плюсов/минусов — выдели их из текста отзывов самостоятельно.',
+      `- Лимит шагов: ${MAX_ITERATIONS}.`,
       '',
       '## ФОРМАТ ОТВЕТА',
-      'HTML для Telegram. Разрешённые теги: <b>текст</b>, <i>текст</i>, <a href="URL">текст</a>.',
-      'Запрещено: ** **, [ ]( ), # заголовки, <br>, <ul>, <li>.',
+      'HTML для Telegram. Только теги: <b>жирный</b>, <i>курсив</i>, <a href="URL">текст</a>.',
+      'Не использовать: ** **, [ ]( ), # заголовки, --- разделители, <ul>, <li>, <br>.',
+      'Используй • и символ новой строки вместо HTML-списков.',
       '',
-      `Лимит шагов: ${MAX_ITERATIONS}.`,
+      'Структура:',
+      '<b>Сравнение: [Товар А] vs [Товар Б]</b>',
+      '',
+      '<b>[Товар А]</b> <i>(оценка X/5 · Источник)</i> — от [цена] ₽',
+      '<b>Плюсы:</b>',
+      '• [плюс из реальных отзывов]',
+      '• ...',
+      '<b>Минусы:</b>',
+      '• [минус из реальных отзывов]',
+      '<i>"цитата реального покупателя" — реальный покупатель</i>',
+      '',
+      '[повторить блок для каждого товара]',
+      '',
+      '<b>Вывод:</b>',
+      '[Конкретная рекомендация: кому какой товар подходит лучше и почему]',
+      '',
+      'Источники: <a href="URL1">Яндекс.Маркет</a>, <a href="URL2">Отзовик</a>',
     ].join('\n');
 
     const model = this.modelService.getChatModel(0.3, modelId).bindTools(tools);
@@ -373,8 +403,8 @@ export class ToursHotelsAgentService extends BaseAgentService {
     const nudgeNode = async () => ({
       messages: [
         new HumanMessage(
-          `${TOOL_NUDGE_PREFIX} Ты вернул только текст без вызова инструмента. Пока подбор не завершён — в ответе обязательно должен быть tool call ` +
-            '(browse_page или search_web). Не пиши планы («применю фильтр») — сразу вызывай инструмент. Финальный ответ с ссылками — когда цель достигнута.',
+          `${TOOL_NUDGE_PREFIX} Ты вернул только текст без вызова инструмента. Пока сравнение не завершено — в ответе обязательно должен быть tool call ` +
+            '(browse_page или search_web). Не описывай намерение («применю фильтр») — сразу вызывай инструмент. Финальный HTML пользователю — только когда есть блок «Вывод» и все товары обработаны.',
         ),
       ],
     });
@@ -388,7 +418,7 @@ export class ToursHotelsAgentService extends BaseAgentService {
         return END;
       }
       const finalText = getAiMessagePlainText(lastMessage);
-      if (looksLikeFinalToursAnswer(finalText)) {
+      if (looksLikeFinalProductComparisonAnswer(finalText)) {
         return END;
       }
       if (countToolNudgesInMessages(state.messages) >= MAX_TOOL_NUDGES_PER_RUN) {
@@ -413,11 +443,9 @@ export class ToursHotelsAgentService extends BaseAgentService {
         const screenshot = toolCall.name === 'browse_page' ? latestScreenshot : null;
         latestScreenshot = null;
 
-        // ToolMessage содержит только текст (image_url в role:tool не поддерживается OpenAI-форматом)
         outMessages.push(new ToolMessage({ content: textResult, tool_call_id: toolCall.id ?? '' }));
 
         if (screenshot) {
-          // Скриншот передаём отдельным HumanMessage — только так vision-модели его видят
           outMessages.push(new HumanMessage({
             content: [
               { type: 'text', text: 'Скриншот страницы после выполнения browse_page:' },
@@ -445,9 +473,11 @@ export class ToursHotelsAgentService extends BaseAgentService {
         .replace(/^[\s\S]*?<\/think(?:ing)?>/i, '')      // <think>...</think> или <thinking>...</thinking>
         .replace(/^\s*<think(?:ing)?>\s*/i, '')           // незакрытый <think> в начале
         .replace(/^\s*(thought|thinking)\s*[\n:]/i, '')  // "thought\n" / "thinking:"
-        .replace(/^[\u0080-\u00FF\u0400-\u04FF\s]{0,8}(thought|thinking)\s*[\n:]/i, '') // мусор + thought
-        .replace(/^[\u0080-\u00FF]{1,6}/, '')            // 1-6 байт Latin Extended без слова
-        .replace(/(\*\s*(Wait|Let['']s go|Step|Action|Thought|Note)\s*\*\s*[:：]?[^\n]*\n?)+/gi, '') // *Wait*: ... *Let's go*
+        .replace(/^[\u0080-\u00FF\u0400-\u04FF\s]{0,8}(thought|thinking)\s*[\n:]/i, '')
+        .replace(/^[\u0080-\u00FF]{1,6}/, '')            // мусорные байты Latin Extended
+        .replace(/(\*\s*(Wait|Let['']s go|Step|Action|Thought|Note)\s*\*\s*[:：]?[^\n]*\n?)+/gi, '')
+        .replace(/^[\s,]*(?:null|undefined|true|false)\s*\}?\s*/i, '') // JSON-артефакты: `, null}` после </think>
+        .replace(/^\s*\}\s*\n*/g, '')                    // одиночная закрывающая скобка в начале
         .trim();
 
     interface ContentTextBlock {
@@ -470,14 +500,14 @@ export class ToursHotelsAgentService extends BaseAgentService {
       const content = lastMessage?.content;
 
       if (typeof content === 'string') {
-        return stripThinking(content) || 'Поиск завершён.';
+        return stripThinking(content) || 'Сравнение завершено.';
       }
       if (Array.isArray(content)) {
         const textBlock = (content as ContentTextBlock[]).find((block) => block.type === 'text');
-        return stripThinking(textBlock?.text ?? '') || 'Поиск завершён.';
+        return stripThinking(textBlock?.text ?? '') || 'Сравнение завершено.';
       }
 
-      return `Достигнут лимит ${MAX_ITERATIONS} шагов. Поиск не завершён. Попробуйте уточнить запрос.`;
+      return `Достигнут лимит ${MAX_ITERATIONS} шагов. Сравнение не завершено. Попробуйте уточнить запрос.`;
     } finally {
       await this.playwrightTool.closeSession(session);
     }
@@ -496,5 +526,4 @@ export class ToursHotelsAgentService extends BaseAgentService {
       this.loggerService.warn(this.TAG, 'logSearch failed (non-critical)', error);
     }
   };
-
 }

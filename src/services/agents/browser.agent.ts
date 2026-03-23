@@ -4,7 +4,7 @@ import type { Page } from 'rebrowser-playwright';
 
 import { BaseAgentService } from '@/services/agents/base-agent.service';
 import { ModelService } from '@/services/model/model.service';
-import { PlaywrightTool, type BrowseResult } from '@/services/tools/playwright.tool';
+import { PlaywrightTool, type BrowseResult, type PageAction } from '@/services/tools/playwright.tool';
 import { YandexSearchTool, type YandexSearchResult } from '@/services/tools/yandex-search.tool';
 import { SearchHistoryEntity } from '@/db/entities/search-history.entity';
 import { RequestEntity } from '@/db/entities/request.entity';
@@ -16,6 +16,7 @@ export interface BrowserAgentInput {
   requestId: number;
   messageText: string;
   modelId?: string | null;
+  onStatusUpdate?: (text: string) => Promise<void>;
 }
 
 interface StepRecord {
@@ -33,8 +34,15 @@ type BrowserAction =
   | { action: 'navigate'; url: string; reasoning: string; }
   | { action: 'click'; x: number; y: number; reasoning: string; }
   | { action: 'click_text'; text: string; reasoning: string; }
+  | { action: 'click_selector'; selector: string; reasoning: string; }
   | { action: 'type'; text: string; clear?: boolean; reasoning: string; }
-  | { action: 'press_key'; key: string; reasoning: string; }
+  | { action: 'fill_selector'; selector: string; value: string; reasoning: string; }
+  | { action: 'fill_placeholder'; placeholder: string; value: string; reasoning: string; }
+  | { action: 'fill_label'; label: string; value: string; reasoning: string; }
+  | { action: 'select_option'; selector: string; value: string; reasoning: string; }
+  | { action: 'set_checked'; selector: string; checked: boolean; reasoning: string; }
+  | { action: 'hover_selector'; selector: string; reasoning: string; }
+  | { action: 'press_key'; key: string; selector?: string; reasoning: string; }
   | { action: 'scroll'; direction: 'up' | 'down'; pixels?: number; reasoning: string; }
   | { action: 'wait'; milliseconds: number; reasoning: string; }
   | { action: 'done'; result: string; reasoning: string; }
@@ -57,7 +65,7 @@ export class BrowserAgentService extends BaseAgentService {
   private readonly yandexSearchTool = Container.get(YandexSearchTool);
 
   public process = async (input: BrowserAgentInput): Promise<string> => {
-    const { telegramId, userId, requestId, messageText, modelId } = input;
+    const { telegramId, userId, requestId, messageText, modelId, onStatusUpdate } = input;
 
     this.loggerService.info(this.TAG, 'Browser agent started', { messageText });
 
@@ -76,9 +84,24 @@ export class BrowserAgentService extends BaseAgentService {
     let consecutiveCaptchaSteps = 0;
     const MAX_CONSECUTIVE_CAPTCHA_STEPS = 3;
 
+    const notifyStatus = async (text: string) => {
+      if (onStatusUpdate) {
+        await onStatusUpdate(text).catch(() => undefined);
+      }
+    };
+
     try {
       const startUrl = await this.decideStartUrl(messageText, modelId);
       this.loggerService.info(this.TAG, 'Navigating to start URL', { startUrl });
+
+      const startHostname = (() => {
+        try {
+          return new URL(startUrl).hostname;
+        } catch {
+          return startUrl;
+        }
+      })();
+      await notifyStatus(`Читаю: ${startHostname}`);
 
       let currentResult = await this.playwrightTool.browseInSession(session.page, {
         url: startUrl,
@@ -115,6 +138,10 @@ export class BrowserAgentService extends BaseAgentService {
           reasoning: action.reasoning,
           url: currentResult.finalUrl ?? currentResult.url,
         });
+
+        if (action.reasoning) {
+          await notifyStatus(action.reasoning.substring(0, 120));
+        }
 
         steps.push({
           step,
@@ -357,6 +384,23 @@ export class BrowserAgentService extends BaseAgentService {
         .join('\n')
       : '';
 
+    const filtersText = currentResult.filters.length
+      ? currentResult.filters
+        .slice(0, 35)
+        .map((filterItem) => {
+          const optionsText = filterItem.options?.length ? ` [${filterItem.options.slice(0, 5).join(' | ')}]` : '';
+          return `• [${filterItem.type}] ${filterItem.label}${optionsText} → ${filterItem.selector}`;
+        })
+        .join('\n')
+      : '';
+
+    const buttonsText = currentResult.buttons.length
+      ? currentResult.buttons
+        .slice(0, 40)
+        .map((button) => `• "${button.text}" → ${button.selector}`)
+        .join('\n')
+      : '';
+
     this.loggerService.debug(this.TAG, `Step ${stepNumber} linksText`, {
       linksCount: currentResult.links.length,
       linksPreview: linksText.substring(0, 800),
@@ -364,6 +408,7 @@ export class BrowserAgentService extends BaseAgentService {
 
     const systemPrompt = [
       'Ты — высокоинтеллектуальный веб-агент. Ты видишь скриншот браузера и управляешь им.',
+      this.buildAgentCurrentDatePromptBlock(),
       'Анализируй скриншот внимательно: определяй кнопки, поля ввода, ссылки, контент.',
       '',
       `ЦЕЛЬ ПОЛЬЗОВАТЕЛЯ: ${goal}`,
@@ -380,22 +425,40 @@ export class BrowserAgentService extends BaseAgentService {
       linksText ? 'РЕАЛЬНЫЕ ССЫЛКИ СО СТРАНИЦЫ (используй только их — не придумывай URL):' : '',
       linksText || '',
       '',
+      filtersText ? 'ФИЛЬТРЫ И ПОЛЯ ФОРМ (готовые CSS-селекторы — для select_option, set_checked, click_selector):' : '',
+      filtersText || '',
+      '',
+      buttonsText ? 'КНОПКИ (текст → селектор для click_selector):' : '',
+      buttonsText || '',
+      '',
       'ДОСТУПНЫЕ ДЕЙСТВИЯ — верни ТОЛЬКО один валидный JSON:',
       '{"action":"navigate","url":"https://...","reasoning":"причина"}',
       '{"action":"click","x":123,"y":456,"reasoning":"причина"}  — клик по координатам скриншота',
-      '{"action":"click_text","text":"Текст кнопки","reasoning":"причина"}  — клик по тексту',
-      '{"action":"type","text":"текст для ввода","clear":true,"reasoning":"причина"}  — ввод в сфокусированное поле',
-      '{"action":"press_key","key":"Enter","reasoning":"причина"}  — нажать клавишу (Enter, Tab, Escape, Backspace и др.)',
+      '{"action":"click_text","text":"Текст кнопки","reasoning":"причина"}  — клик по видимому тексту',
+      '{"action":"click_selector","selector":"#id или CSS","reasoning":"причина"}  — клик по селектору из списка кнопок/фильтров ниже',
+      '{"action":"type","text":"текст","clear":true,"reasoning":"причина"}  — ввод в УЖЕ сфокусированное поле (после клика по полю)',
+      '{"action":"fill_selector","selector":"#search","value":"запрос","reasoning":"причина"}  — ввести текст в поле по CSS-селектору',
+      '{"action":"fill_placeholder","placeholder":"Что ищем?","value":"текст","reasoning":"причина"}  — поле по placeholder (как на скрине)',
+      '{"action":"fill_label","label":"Дата заезда","value":"01.06.2026","reasoning":"причина"}  — поле по подписи/aria-label рядом с полем',
+      '{"action":"select_option","selector":"select","value":"Сначала дешёвые","reasoning":"причина"}  — выбрать опцию в выпадающем списке',
+      '{"action":"set_checked","selector":"#agree","checked":true,"reasoning":"причина"}  — чекбокс/радио',
+      '{"action":"hover_selector","selector":".menu","reasoning":"причина"}  — навести (открыть подменю)',
+      '{"action":"press_key","key":"Enter","reasoning":"причина"}  или {"action":"press_key","key":"Enter","selector":"#q","reasoning":"..."} — клавиша глобально или внутри поля',
       '{"action":"scroll","direction":"down","pixels":500,"reasoning":"причина"}',
       '{"action":"wait","milliseconds":2000,"reasoning":"причина"}',
       '{"action":"done","result":"ответ пользователю — только теги <b>, <i>, <u>, <a href=\\"...\\">текст</a>, <code>. НЕ использовать <ul> <li> <br> <p> <div> — вместо списков используй • и \\n","reasoning":"причина"}',
       '{"action":"failed","reason":"почему невозможно выполнить","reasoning":"причина"}',
       '',
+      'ФОРМЫ, ПОИСК, ФИЛЬТРЫ:',
+      '- Используй селекторы из блоков «КНОПКИ» и «ФИЛЬТРЫ/СОРТИРОВКА» в тексте страницы — они проверены в DOM.',
+      '- Типовая цепочка поиска: fill_placeholder или fill_selector или клик по полю (click/coords) → type с clear:true → press_key Enter.',
+      '- Календари/сложные виджеты: сначала клик открыть виджет, затем click_text по дате или fill_label.',
+      '- После отправки формы дождись загрузки: wait или дождись смены контента на скриншоте.',
+      '',
       'Правила:',
       '- Координаты x, y — в пикселях скриншота',
       '- Когда нашёл нужную информацию — сразу возвращай done с подробным структурированным результатом',
       '- Если страница не загрузилась — используй wait или navigate снова',
-      '- Для поиска на сайте: кликни на поле → type с clear:true → press_key Enter',
       '- Не повторяй одно и то же действие более 2 раз подряд',
       '',
       'ПРАВИЛА ДЛЯ ТОВАРНЫХ ЗАПРОСОВ:',
@@ -454,6 +517,9 @@ export class BrowserAgentService extends BaseAgentService {
     case 'click_text':
       return this.playwrightTool.clickAndExtract(page, [{ type: 'click_text', value: action.text }], 3000);
 
+    case 'click_selector':
+      return this.playwrightTool.clickAndExtract(page, [{ type: 'click_selector', selector: action.selector }], 3000);
+
     case 'type': {
       if (action.clear) {
         await page.keyboard.press('Control+a');
@@ -464,12 +530,30 @@ export class BrowserAgentService extends BaseAgentService {
       return this.playwrightTool.clickAndExtract(page, [], 1000);
     }
 
-    case 'press_key':
-      await page.keyboard.press(action.key);
-      try {
-        await page.waitForLoadState('networkidle', { timeout: 5000 });
-      } catch { /* ok */ }
-      return this.playwrightTool.clickAndExtract(page, [], 2000);
+    case 'fill_selector':
+      return this.playwrightTool.clickAndExtract(page, [{ type: 'fill_selector', selector: action.selector, value: action.value }], 2000);
+
+    case 'fill_placeholder':
+      return this.playwrightTool.clickAndExtract(page, [{ type: 'fill_placeholder', placeholder: action.placeholder, value: action.value }], 2000);
+
+    case 'fill_label':
+      return this.playwrightTool.clickAndExtract(page, [{ type: 'fill_label', label: action.label, value: action.value }], 2000);
+
+    case 'select_option':
+      return this.playwrightTool.clickAndExtract(page, [{ type: 'select_option', selector: action.selector, value: action.value }], 3000);
+
+    case 'set_checked':
+      return this.playwrightTool.clickAndExtract(page, [{ type: 'set_checked', selector: action.selector, checked: action.checked }], 2000);
+
+    case 'hover_selector':
+      return this.playwrightTool.clickAndExtract(page, [{ type: 'hover', selector: action.selector }], 1500);
+
+    case 'press_key': {
+      const pressActions: PageAction[] = action.selector
+        ? [{ type: 'press_key', key: action.key, selector: action.selector }]
+        : [{ type: 'press_key', key: action.key }];
+      return this.playwrightTool.clickAndExtract(page, pressActions, 2000);
+    }
 
     case 'scroll':
       return this.playwrightTool.clickAndExtract(
