@@ -47,10 +47,10 @@ export class GeneralAgentService extends BaseAgentService {
     const history = input.skipHistory
       ? []
       : await ConversationHistoryEntity.find({
-          where: { user: { id: userId } },
-          order: { created: 'DESC' },
-          take: 10,
-        });
+        where: { user: { id: userId } },
+        order: { created: 'DESC' },
+        take: 10,
+      });
 
     const systemMessage = new SystemMessage(
       [
@@ -107,7 +107,14 @@ export class GeneralAgentService extends BaseAgentService {
     let imageBuffers: GeneralAgentImageBuffer[];
     try {
       const response = await model.invoke([systemMessage, ...historyMessages, userMessage]);
+      this.loggerService.debug(this.TAG, 'Raw LLM response content', {
+        contentType: typeof response.content,
+        content: typeof response.content === 'string'
+          ? response.content.substring(0, 500)
+          : JSON.stringify(response.content).substring(0, 1000),
+      });
       const { text, imageBuffers: extracted } = await this.extractResponseContent(response.content);
+      this.loggerService.debug(this.TAG, 'Extracted from response', { text: text.substring(0, 200), imageBuffersCount: extracted.length });
       answer = this.convertMarkdownToHtml(text);
       imageBuffers = extracted;
     } catch (error) {
@@ -133,11 +140,11 @@ export class GeneralAgentService extends BaseAgentService {
     const imageBuffers: GeneralAgentImageBuffer[] = [];
 
     for (const block of content) {
-      const typedBlock = block as { type?: string; text?: string; image_url?: { url: string; }; };
+      const typedBlock = block as { type?: string; text?: string; url?: string; image_url?: { url: string; }; };
       if (typedBlock.type === 'text' && typedBlock.text) {
         textParts.push(typedBlock.text);
-      } else if (typedBlock.type === 'image_url' && typedBlock.image_url?.url) {
-        const { url } = typedBlock.image_url;
+      } else if (typedBlock.type === 'image_url' || typedBlock.type === 'image') {
+        const url = typedBlock.image_url?.url ?? typedBlock.url ?? '';
         if (url.startsWith('data:')) {
           const [header, base64Data] = url.split(',');
           const mimeMatch = header.match(/data:([^;]+)/);

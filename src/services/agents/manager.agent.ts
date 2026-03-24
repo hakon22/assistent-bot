@@ -16,6 +16,7 @@ import { RequestEntity } from '@/db/entities/request.entity';
 import { RequestService } from '@/services/request/request.service';
 import { ConversationHistoryEntity } from '@/db/entities/conversation-history.entity';
 import { TelegramDialogStateEntity, TelegramDialogStateEnum } from '@/db/entities/telegram-dialog-state.entity';
+import { ModelEntity } from '@/db/entities/model.entity';
 
 type AgentName = 'job_search_agent' | 'tours_hotels_agent' | 'general_agent' | 'reminder_agent' | 'browser_agent' | 'product_comparison_agent';
 
@@ -94,8 +95,6 @@ export class ManagerAgentService extends BaseAgentService {
   protected readonly TAG = 'ManagerAgentService';
 
   protected readonly AGENT_NAME = 'manager_agent';
-
-  private readonly IMAGE_GENERATION_MODEL_ID = 'black-forest-labs/flux.2-pro';
 
   private readonly REMINDER_PATTERN = /^(?:напомни\b|поставь напоминание|не забудь|через \d+\s*(?:секунд|минут|минуты|минуту|час|часа|часов))/i;
 
@@ -320,7 +319,7 @@ export class ManagerAgentService extends BaseAgentService {
   private readonly graph = this.buildGraph();
 
   public process = async (input: ManagerInput): Promise<ManagerResult> => {
-    if (input.modelId === this.IMAGE_GENERATION_MODEL_ID) {
+    if (input.modelId && await this.isImageGenerationModel(input.modelId)) {
       return this.processImageGenerationRequest(input);
     }
 
@@ -389,7 +388,7 @@ export class ManagerAgentService extends BaseAgentService {
       onStatusUpdate: input.onStatusUpdate,
     });
 
-    const responseText = result.response || 'Извините, не удалось обработать ваш запрос.';
+    const responseText = result.response || (result.imageBuffers?.length ? 'Изображение сгенерировано' : 'Извините, не удалось обработать ваш запрос.');
     const agentName = result.selectedAgent ?? 'general_agent';
 
     await this.requestService.markCompleted(input.requestId, agentName, responseText);
@@ -409,8 +408,18 @@ export class ManagerAgentService extends BaseAgentService {
     } catch { /* non-critical */ }
   };
 
+  private isImageGenerationModel = async (modelId: string): Promise<boolean> => {
+    try {
+      const model = await ModelEntity.findOne({ select: ['modelId', 'isImageGeneration'], where: { modelId, isActive: true } });
+      return model?.isImageGeneration ?? false;
+    } catch (error) {
+      this.loggerService.error(this.TAG, 'isImageGenerationModel error', error);
+      return false;
+    }
+  };
+
   private processImageGenerationRequest = async (input: ManagerInput): Promise<ManagerResult> => {
-    this.loggerService.info(this.TAG, 'Запрос на генерацию изображения (Flux)', { telegramId: input.telegramId });
+    this.loggerService.info(this.TAG, 'Запрос на генерацию изображения', { telegramId: input.telegramId, modelId: input.modelId });
 
     await this.requestService.markProcessing(input.requestId);
 
@@ -436,14 +445,14 @@ export class ManagerAgentService extends BaseAgentService {
     }
 
     const optimizedPrompt = await this.optimizeImagePrompt(cleanText);
-    this.loggerService.info(this.TAG, 'Оптимизированный промпт для Flux', { optimizedPrompt });
+    this.loggerService.info(this.TAG, 'Оптимизированный промпт для генерации изображения', { optimizedPrompt });
 
     const { text, imageBuffers } = await this.generalAgentService.process({
       telegramId: input.telegramId,
       userId: input.userId,
       requestId: input.requestId,
       messageText: optimizedPrompt,
-      modelId: this.IMAGE_GENERATION_MODEL_ID,
+      modelId: input.modelId,
       skipHistory: true,
     });
 
@@ -472,12 +481,17 @@ export class ManagerAgentService extends BaseAgentService {
     try {
       const model = this.modelService.getChatModel(0.3, null);
       const systemPrompt = [
-        'Ты оптимизируешь запросы для модели генерации изображений Flux.',
-        'Извлеки суть запроса и переформулируй его в виде чёткого, детального промпта.',
-        'Отвечай ТОЛЬКО на английском языке — это обязательное требование модели Flux.',
+        'Ты оптимизируешь запросы для модели генерации изображений.',
+        'Извлеки суть запроса и переформулируй его в виде чёткого, лаконичного промпта.',
+        'Отвечай ТОЛЬКО на английском языке — это обязательное требование модели.',
         'Возвращай ТОЛЬКО промпт, без пояснений и вводных фраз.',
+        'ЗАПРЕЩЕНО добавлять теги разрешения и качества (8k, 4k, HD, ultra-detailed, high-resolution, professional lighting, photorealistic, hyperrealistic и подобные), если пользователь явно их не запросил.',
+        'Промпт должен описывать только то, что просил пользователь — без лишних украшений.',
       ].join('\n');
-      const response = await model.invoke([new SystemMessage(systemPrompt), new HumanMessage(messageText)]);
+      const response = await model.invoke([
+        new SystemMessage(systemPrompt),
+        new HumanMessage(messageText),
+      ]);
       const optimized = typeof response.content === 'string' ? response.content.trim() : '';
       return optimized || messageText;
     } catch (error) {
