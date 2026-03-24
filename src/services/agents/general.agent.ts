@@ -107,7 +107,7 @@ export class GeneralAgentService extends BaseAgentService {
     let imageBuffers: GeneralAgentImageBuffer[];
     try {
       const response = await model.invoke([systemMessage, ...historyMessages, userMessage]);
-      const { text, imageBuffers: extracted } = this.extractResponseContent(response.content);
+      const { text, imageBuffers: extracted } = await this.extractResponseContent(response.content);
       answer = this.convertMarkdownToHtml(text);
       imageBuffers = extracted;
     } catch (error) {
@@ -124,7 +124,7 @@ export class GeneralAgentService extends BaseAgentService {
     return { text: answer, imageBuffers };
   };
 
-  private extractResponseContent = (content: string | unknown[]): GeneralAgentResult => {
+  private extractResponseContent = async (content: string | unknown[]): Promise<GeneralAgentResult> => {
     if (typeof content === 'string') {
       return { text: content.trim(), imageBuffers: [] };
     }
@@ -136,17 +136,44 @@ export class GeneralAgentService extends BaseAgentService {
       const typedBlock = block as { type?: string; text?: string; image_url?: { url: string; }; };
       if (typedBlock.type === 'text' && typedBlock.text) {
         textParts.push(typedBlock.text);
-      } else if (typedBlock.type === 'image_url' && typedBlock.image_url?.url?.startsWith('data:')) {
-        const [header, base64Data] = typedBlock.image_url.url.split(',');
-        const mimeMatch = header.match(/data:([^;]+)/);
-        const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
-        if (base64Data) {
-          imageBuffers.push({ buffer: Buffer.from(base64Data, 'base64'), mimeType });
+      } else if (typedBlock.type === 'image_url' && typedBlock.image_url?.url) {
+        const { url } = typedBlock.image_url;
+        if (url.startsWith('data:')) {
+          const [header, base64Data] = url.split(',');
+          const mimeMatch = header.match(/data:([^;]+)/);
+          const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
+          if (base64Data) {
+            imageBuffers.push({ buffer: Buffer.from(base64Data, 'base64'), mimeType });
+          }
+        } else if (url.startsWith('http')) {
+          const downloaded = await this.downloadImageFromUrl(url);
+          if (downloaded) {
+            imageBuffers.push(downloaded);
+          }
         }
       }
     }
 
     return { text: textParts.join('\n').trim(), imageBuffers };
+  };
+
+  private downloadImageFromUrl = async (url: string): Promise<GeneralAgentImageBuffer | null> => {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        this.loggerService.warn(this.TAG, 'Image download failed', { url, status: response.status });
+        return null;
+      }
+      const contentType = response.headers.get('content-type') ?? 'image/png';
+      const mimeType = contentType.split(';')[0].trim();
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      this.loggerService.info(this.TAG, 'Image downloaded from URL', { url, mimeType, bytes: buffer.length });
+      return { buffer, mimeType };
+    } catch (error) {
+      this.loggerService.error(this.TAG, 'downloadImageFromUrl error', error);
+      return null;
+    }
   };
 
   private convertMarkdownToHtml = (text: string): string =>
