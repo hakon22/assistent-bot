@@ -28,6 +28,8 @@ export interface GeneralAgentInput {
   imageUrl?: string;
   mediaType?: string;
   modelId?: string | null;
+  /** Skip loading conversation history (e.g. for image generation models that don't need context) */
+  skipHistory?: boolean;
 }
 
 @Singleton
@@ -41,12 +43,14 @@ export class GeneralAgentService extends BaseAgentService {
   public process = async (input: GeneralAgentInput): Promise<GeneralAgentResult> => {
     const { telegramId, userId, requestId, messageText, fileText, imageUrl, mediaType, modelId } = input;
 
-    // Загружаем последние 10 сообщений из истории
-    const history = await ConversationHistoryEntity.find({
-      where: { user: { id: userId } },
-      order: { created: 'DESC' },
-      take: 10,
-    });
+    // Загружаем последние 10 сообщений из истории (если не запрещено)
+    const history = input.skipHistory
+      ? []
+      : await ConversationHistoryEntity.find({
+          where: { user: { id: userId } },
+          order: { created: 'DESC' },
+          take: 10,
+        });
 
     const systemMessage = new SystemMessage(
       [

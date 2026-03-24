@@ -444,6 +444,7 @@ export class ManagerAgentService extends BaseAgentService {
       requestId: input.requestId,
       messageText: optimizedPrompt,
       modelId: this.IMAGE_GENERATION_MODEL_ID,
+      skipHistory: true,
     });
 
     await this.requestService.markCompleted(input.requestId, 'image_generation_agent', text || 'Изображение сгенерировано');
