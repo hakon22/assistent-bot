@@ -389,7 +389,7 @@ export class ManagerAgentService extends BaseAgentService {
       onStatusUpdate: input.onStatusUpdate,
     });
 
-    const responseText = result.response ?? 'Извините, не удалось обработать ваш запрос.';
+    const responseText = result.response || 'Извините, не удалось обработать ваш запрос.';
     const agentName = result.selectedAgent ?? 'general_agent';
 
     await this.requestService.markCompleted(input.requestId, agentName, responseText);
@@ -449,7 +449,7 @@ export class ManagerAgentService extends BaseAgentService {
 
     await this.requestService.markCompleted(input.requestId, 'image_generation_agent', text || 'Изображение сгенерировано');
 
-    return { responseText: text || '', agentName: 'image_generation_agent', imageBuffers };
+    return { responseText: text || 'Изображение сгенерировано', agentName: 'image_generation_agent', imageBuffers };
   };
 
   private isImageGenerationRequest = async (messageText: string): Promise<boolean> => {

@@ -58,6 +58,10 @@ export class TelegramBotService {
   };
 
   public sendMessage = async (text: string, telegramId: string, options?: ExtraReplyMessage) => {
+    if (!text?.trim()) {
+      this.loggerService.warn(this.TAG, `sendMessage: пустой текст, пропускаем отправку`, { telegramId });
+      return;
+    }
     try {
       return this.getBot().telegram.sendMessage(telegramId, this.sanitizeTelegramHtml(text), {
         parse_mode: 'HTML',
@@ -83,6 +87,10 @@ export class TelegramBotService {
   };
 
   public editMessage = async (text: string, telegramId: string, messageId: number, options?: ExtraEditMessageText) => {
+    if (!text?.trim()) {
+      this.loggerService.warn(this.TAG, `editMessage: пустой текст, пропускаем редактирование`, { telegramId, messageId });
+      return;
+    }
     const sanitizedText = this.sanitizeTelegramHtml(text);
     try {
       return await this.getBot().telegram.editMessageText(telegramId, messageId, undefined, sanitizedText, {
