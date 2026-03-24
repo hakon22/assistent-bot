@@ -11,10 +11,10 @@ export class ModelService {
 
   private readonly temperature = 0.7;
 
-  public getChatModel = (temperature?: number, modelId?: string | null): ChatOpenAI => {
+  public getChatModel = (temperature: number | null | undefined, modelId?: string | null): ChatOpenAI => {
     return new ChatOpenAI({
       model: modelId ?? this.modelName,
-      temperature: temperature ?? this.temperature,
+      ...(temperature !== null ? { temperature: temperature ?? this.temperature } : {}),
       apiKey: this.apiKey,
       configuration: {
         baseURL: this.baseUrl,

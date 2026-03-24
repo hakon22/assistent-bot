@@ -445,15 +445,18 @@ export class ManagerAgentService extends BaseAgentService {
     }
 
     const optimizedPrompt = await this.optimizeImagePrompt(cleanText);
-    this.loggerService.info(this.TAG, 'Оптимизированный промпт для генерации изображения', { optimizedPrompt });
+    this.loggerService.info(this.TAG, 'Оптимизированный промпт для генерации изображения', { optimizedPrompt, hasImage: !!input.imageUrl });
 
     const { text, imageBuffers } = await this.generalAgentService.process({
       telegramId: input.telegramId,
       userId: input.userId,
       requestId: input.requestId,
       messageText: optimizedPrompt,
+      imageUrl: input.imageUrl,
+      mediaType: input.imageUrl ? 'photo' : undefined,
       modelId: input.modelId,
       skipHistory: true,
+      skipTemperature: true,
     });
 
     await this.requestService.markCompleted(input.requestId, 'image_generation_agent', text || 'Изображение сгенерировано');
@@ -468,7 +471,10 @@ export class ManagerAgentService extends BaseAgentService {
         'Ты определяешь, является ли запрос пользователя просьбой о генерации, создании или рисовании изображения.',
         'Ответь ТОЛЬКО одним словом: "да" или "нет".',
       ].join('\n');
-      const response = await model.invoke([new SystemMessage(systemPrompt), new HumanMessage(messageText)]);
+      const response = await model.invoke([
+        new SystemMessage(systemPrompt),
+        new HumanMessage(messageText),
+      ]);
       const answer = typeof response.content === 'string' ? response.content.trim().toLowerCase() : '';
       return answer.startsWith('да');
     } catch (error) {
@@ -488,10 +494,7 @@ export class ManagerAgentService extends BaseAgentService {
         'ЗАПРЕЩЕНО добавлять теги разрешения и качества (8k, 4k, HD, ultra-detailed, high-resolution, professional lighting, photorealistic, hyperrealistic и подобные), если пользователь явно их не запросил.',
         'Промпт должен описывать только то, что просил пользователь — без лишних украшений.',
       ].join('\n');
-      const response = await model.invoke([
-        new SystemMessage(systemPrompt),
-        new HumanMessage(messageText),
-      ]);
+      const response = await model.invoke([new SystemMessage(systemPrompt), new HumanMessage(messageText)]);
       const optimized = typeof response.content === 'string' ? response.content.trim() : '';
       return optimized || messageText;
     } catch (error) {

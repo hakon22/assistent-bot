@@ -30,6 +30,8 @@ export interface GeneralAgentInput {
   modelId?: string | null;
   /** Skip loading conversation history (e.g. for image generation models that don't need context) */
   skipHistory?: boolean;
+  /** Skip temperature parameter (required for image generation models that don't support it) */
+  skipTemperature?: boolean;
 }
 
 @Singleton
@@ -101,7 +103,7 @@ export class GeneralAgentService extends BaseAgentService {
       userMessage = new HumanMessage(text);
     }
 
-    const model = this.modelService.getChatModel(0.7, modelId);
+    const model = this.modelService.getChatModel(input.skipTemperature ? null : 0.7, modelId);
 
     let answer: string;
     let imageBuffers: GeneralAgentImageBuffer[];
