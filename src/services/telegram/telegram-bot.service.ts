@@ -6,17 +6,6 @@ import type { Context } from 'telegraf';
 
 import { LoggerService } from '@/services/app/logger.service';
 
-// Теги, которые поддерживает Telegram HTML-парсер
-const ALLOWED_TELEGRAM_TAGS = new Set(['b', 'i', 'u', 's', 'strike', 'del', 'code', 'pre', 'a', 'tg-spoiler', 'tg-emoji']);
-
-const sanitizeTelegramHtml = (text: string): string =>
-  text.replace(/<\/?([a-zA-Z][a-zA-Z0-9-]*)(?:\s[^>]*)?\s*\/?>/g, (match, tagName: string) => {
-    if (ALLOWED_TELEGRAM_TAGS.has(tagName.toLowerCase())) {
-      return match;
-    }
-    return '';
-  });
-
 @Singleton
 export class TelegramBotService {
   private readonly TAG = 'TelegramBotService';
@@ -28,6 +17,11 @@ export class TelegramBotService {
   private readonly socksProxyAgent: SocksProxyAgent | null = process.env.TELEGRAM_PROXY_USER && process.env.TELEGRAM_PROXY_PASS && process.env.TELEGRAM_PROXY_HOST
     ? new SocksProxyAgent(`socks5://${process.env.TELEGRAM_PROXY_USER}:${process.env.TELEGRAM_PROXY_PASS}@${process.env.TELEGRAM_PROXY_HOST}`)
     : null;
+
+  private readonly PHOTO_SIZE_LIMIT_BYTES = 10 * 1024 * 1024; // 10 MB
+
+  // Теги, которые поддерживает Telegram HTML-парсер
+  private readonly ALLOWED_TELEGRAM_TAGS = new Set(['b', 'i', 'u', 's', 'strike', 'del', 'code', 'pre', 'a', 'tg-spoiler', 'tg-emoji']);
 
   public getSocksProxyAgent = (): SocksProxyAgent | null => this.socksProxyAgent;
 
@@ -65,7 +59,7 @@ export class TelegramBotService {
 
   public sendMessage = async (text: string, telegramId: string, options?: ExtraReplyMessage) => {
     try {
-      return this.getBot().telegram.sendMessage(telegramId, sanitizeTelegramHtml(text), {
+      return this.getBot().telegram.sendMessage(telegramId, this.sanitizeTelegramHtml(text), {
         parse_mode: 'HTML',
         ...options,
       });
@@ -89,7 +83,7 @@ export class TelegramBotService {
   };
 
   public editMessage = async (text: string, telegramId: string, messageId: number, options?: ExtraEditMessageText) => {
-    const sanitizedText = sanitizeTelegramHtml(text);
+    const sanitizedText = this.sanitizeTelegramHtml(text);
     try {
       return await this.getBot().telegram.editMessageText(telegramId, messageId, undefined, sanitizedText, {
         parse_mode: 'HTML',
@@ -111,17 +105,27 @@ export class TelegramBotService {
     }
   };
 
-  /** Отправка файла буфером (фото или документ в зависимости от mime) */
+  /** Отправка файла буфером (фото или документ в зависимости от mime и размера) */
   public sendFileFromBuffer = async (telegramId: string, buffer: Buffer, mime: string, fileName?: string) => {
     try {
       const inputFile = Input.fromBuffer(buffer, fileName ?? 'file');
-      if (mime.startsWith('image/')) {
+      if (mime.startsWith('image/') && buffer.length <= this.PHOTO_SIZE_LIMIT_BYTES) {
+        this.loggerService.debug(this.TAG, `sendFileFromBuffer → sendPhoto (${buffer.length} bytes)`);
         return this.getBot().telegram.sendPhoto(telegramId, inputFile, { parse_mode: 'HTML' });
       }
+      this.loggerService.debug(this.TAG, `sendFileFromBuffer → sendDocument (${buffer.length} bytes, mime: ${mime})`);
       return this.getBot().telegram.sendDocument(telegramId, inputFile, { parse_mode: 'HTML' });
     } catch (error) {
       this.loggerService.error(this.TAG, `Ошибка отправки файла на telegramId ${telegramId}`, error);
       throw error;
     }
   };
+
+  private sanitizeTelegramHtml = (text: string): string =>
+    text.replace(/<\/?([a-zA-Z][a-zA-Z0-9-]*)(?:\s[^>]*)?\s*\/?>/g, (match, tagName: string) => {
+      if (this.ALLOWED_TELEGRAM_TAGS.has(tagName.toLowerCase())) {
+        return match;
+      }
+      return '';
+    });
 }

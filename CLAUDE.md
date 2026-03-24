@@ -14,10 +14,21 @@ Personal Telegram assistant bot — a companion and helper for the owner. Suppor
 
 ## Key Architecture
 Multi-agent system with LangGraph:
-- **ManagerAgent** — routes requests to one of 3 agents
-- **GeneralAgent** — default Q&A, multimodal (text/image/file)
+- **ManagerAgent** — routes requests to one of the agents below; handles special-model pre-checks (e.g. Flux)
+- **GeneralAgent** — default Q&A, multimodal (text/image/file); extracts image buffers from LLM responses
 - **JobSearchAgent** — hh.ru vacancy search + resume matching
 - **ToursHotelsAgent** — agentic web research (Yandex Search + Playwright)
+- **BrowserAgent** — agentic Playwright browsing (shopping, search, web scraping)
+- **ProductComparisonAgent** — compare products via web research and reviews
+- **ReminderAgent** — set reminders for self or partner
+- **ImageGenerationAgent** (virtual, not a separate class) — activated when model `black-forest-labs/flux.2-pro` is selected; default model classifies intent and optimises the prompt into English, then Flux generates the image; non-generation requests are rejected with a user-friendly error
+
+### Image delivery
+`GeneralAgent.process()` returns `GeneralAgentResult { text, imageBuffers[] }`.
+`ManagerResult` carries `imageBuffers?` up to the command handler.
+`TelegramBotCommandService.runManager()` sends each buffer after the text message:
+- image ≤ 10 MB → `sendPhoto`
+- image > 10 MB → `sendDocument`
 
 ## Project Structure
 ```
@@ -28,7 +39,7 @@ src/
 │   ├── entities/                 # 13 TypeORM entities
 │   └── migrations/
 ├── services/
-│   ├── agents/                   # manager, general, job-search, tours-hotels
+│   ├── agents/                   # manager, general, job-search, tours-hotels, browser, product-comparison, reminder
 │   ├── telegram/                 # bot service, commands, webhook
 │   ├── tools/                    # hh-api, yandex-search, playwright, yandex-stt
 │   ├── model/                    # LLM wrapper

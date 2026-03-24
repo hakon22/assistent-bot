@@ -26,6 +26,7 @@ const ACKNOWLEDGEMENTS: Record<string, string> = {
   reminder_agent: 'Обрабатываю напоминание',
   product_comparison_agent: 'Читаю отзывы и сравниваю',
   browser_agent: 'Открываю браузер',
+  image_generation_agent: 'Генерирую изображение',
 };
 
 const DOTS = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -783,6 +784,13 @@ export class TelegramBotCommandService extends BaseService {
         await spinner.finish(result.responseText, inlineKeyboard);
       } else {
         await this.sendResult(user.telegramId, result.responseText, result.inlineKeyboard ?? null);
+      }
+
+      if (result.imageBuffers?.length) {
+        this.loggerService.info(this.TAG, `Отправляю ${result.imageBuffers.length} изображений`, { telegramId: user.telegramId });
+        for (const { buffer, mimeType } of result.imageBuffers) {
+          await this.telegramBotService.sendFileFromBuffer(user.telegramId, buffer, mimeType);
+        }
       }
     } catch (error) {
       spinner?.stop();

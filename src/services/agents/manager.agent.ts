@@ -5,7 +5,7 @@ import { SystemMessage, HumanMessage } from '@langchain/core/messages';
 
 import { BaseAgentService } from '@/services/agents/base-agent.service';
 import { ModelService } from '@/services/model/model.service';
-import { GeneralAgentService } from '@/services/agents/general.agent';
+import { GeneralAgentService, GeneralAgentImageBuffer } from '@/services/agents/general.agent';
 import { JobSearchAgentService } from '@/services/agents/job-search.agent';
 import { ToursHotelsAgentService } from '@/services/agents/tours-hotels.agent';
 import { ProductComparisonAgentService } from '@/services/agents/product-comparison.agent';
@@ -61,6 +61,7 @@ const AgentStateAnnotation = Annotation.Root({
   routingReason: Annotation<string | undefined>(),
   response: Annotation<string | undefined>(),
   inlineKeyboard: Annotation<string | null | undefined>(),
+  imageBuffers: Annotation<GeneralAgentImageBuffer[] | undefined>(),
   onAgentSelected: Annotation<((agentName: string) => Promise<void>) | undefined>(),
   onStatusUpdate: Annotation<((text: string) => Promise<void>) | undefined>(),
 });
@@ -85,6 +86,7 @@ export interface ManagerResult {
   responseText: string;
   agentName: string;
   inlineKeyboard?: string | null;
+  imageBuffers?: GeneralAgentImageBuffer[];
 }
 
 @Singleton
@@ -92,6 +94,8 @@ export class ManagerAgentService extends BaseAgentService {
   protected readonly TAG = 'ManagerAgentService';
 
   protected readonly AGENT_NAME = 'manager_agent';
+
+  private readonly IMAGE_GENERATION_MODEL_ID = 'black-forest-labs/flux.2-pro';
 
   private readonly REMINDER_PATTERN = /^(?:напомни\b|поставь напоминание|не забудь|через \d+\s*(?:секунд|минут|минуты|минуту|час|часа|часов))/i;
 
@@ -214,7 +218,7 @@ export class ManagerAgentService extends BaseAgentService {
 
   private generalNode = async (state: AgentState): Promise<Partial<AgentState>> => {
     try {
-      const response = await this.generalAgentService.process({
+      const { text, imageBuffers } = await this.generalAgentService.process({
         telegramId: state.telegramId,
         userId: state.userId,
         requestId: state.requestId,
@@ -224,7 +228,7 @@ export class ManagerAgentService extends BaseAgentService {
         mediaType: state.mediaType,
         modelId: state.modelId,
       });
-      return { response };
+      return { response: text, imageBuffers };
     } catch (error) {
       this.loggerService.error(this.TAG, 'GeneralAgent error', error);
       throw error;
@@ -316,6 +320,10 @@ export class ManagerAgentService extends BaseAgentService {
   private readonly graph = this.buildGraph();
 
   public process = async (input: ManagerInput): Promise<ManagerResult> => {
+    if (input.modelId === this.IMAGE_GENERATION_MODEL_ID) {
+      return this.processImageGenerationRequest(input);
+    }
+
     const dialogState = await TelegramDialogStateEntity.findOne({
       where: { telegramId: input.telegramId },
     });
@@ -376,6 +384,7 @@ export class ManagerAgentService extends BaseAgentService {
       routingReason: undefined,
       response: undefined,
       inlineKeyboard: undefined,
+      imageBuffers: undefined,
       onAgentSelected: input.onAgentSelected,
       onStatusUpdate: input.onStatusUpdate,
     });
@@ -385,7 +394,7 @@ export class ManagerAgentService extends BaseAgentService {
 
     await this.requestService.markCompleted(input.requestId, agentName, responseText);
 
-    return { responseText, agentName, inlineKeyboard: result.inlineKeyboard ?? null };
+    return { responseText, agentName, inlineKeyboard: result.inlineKeyboard ?? null, imageBuffers: result.imageBuffers };
   };
 
   private logDelegation = async (requestId: number, toAgent: string, reason: string, llmReasoning: string): Promise<void> => {
@@ -398,6 +407,82 @@ export class ManagerAgentService extends BaseAgentService {
       delegationLog.llmReasoning = llmReasoning;
       await delegationLog.save();
     } catch { /* non-critical */ }
+  };
+
+  private processImageGenerationRequest = async (input: ManagerInput): Promise<ManagerResult> => {
+    this.loggerService.info(this.TAG, 'Запрос на генерацию изображения (Flux)', { telegramId: input.telegramId });
+
+    await this.requestService.markProcessing(input.requestId);
+
+    const cleanText = input.messageText.replace(this.MEDIA_PREFIX_PATTERN, '');
+    const isImageRequest = await this.isImageGenerationRequest(cleanText);
+
+    if (!isImageRequest) {
+      this.loggerService.warn(this.TAG, 'Запрос не является генерацией изображения, возвращаем ошибку', { cleanText });
+      const errorText = [
+        '<b>⚠️ Выбранная модель предназначена только для генерации изображений.</b>',
+        '',
+        'Опишите изображение, которое нужно создать.',
+        'Например: «нарисуй закат над горами» или «создай портрет кота в стиле аниме».',
+        '',
+        'Для обычных вопросов смените модель командой /model.',
+      ].join('\n');
+      await this.requestService.markCompleted(input.requestId, 'image_generation_agent', errorText);
+      return { responseText: errorText, agentName: 'image_generation_agent' };
+    }
+
+    if (input.onAgentSelected) {
+      await input.onAgentSelected('image_generation_agent').catch(() => undefined);
+    }
+
+    const optimizedPrompt = await this.optimizeImagePrompt(cleanText);
+    this.loggerService.info(this.TAG, 'Оптимизированный промпт для Flux', { optimizedPrompt });
+
+    const { text, imageBuffers } = await this.generalAgentService.process({
+      telegramId: input.telegramId,
+      userId: input.userId,
+      requestId: input.requestId,
+      messageText: optimizedPrompt,
+      modelId: this.IMAGE_GENERATION_MODEL_ID,
+    });
+
+    await this.requestService.markCompleted(input.requestId, 'image_generation_agent', text || 'Изображение сгенерировано');
+
+    return { responseText: text || '', agentName: 'image_generation_agent', imageBuffers };
+  };
+
+  private isImageGenerationRequest = async (messageText: string): Promise<boolean> => {
+    try {
+      const model = this.modelService.getChatModel(0, null);
+      const systemPrompt = [
+        'Ты определяешь, является ли запрос пользователя просьбой о генерации, создании или рисовании изображения.',
+        'Ответь ТОЛЬКО одним словом: "да" или "нет".',
+      ].join('\n');
+      const response = await model.invoke([new SystemMessage(systemPrompt), new HumanMessage(messageText)]);
+      const answer = typeof response.content === 'string' ? response.content.trim().toLowerCase() : '';
+      return answer.startsWith('да');
+    } catch (error) {
+      this.loggerService.error(this.TAG, 'isImageGenerationRequest error', error);
+      return false;
+    }
+  };
+
+  private optimizeImagePrompt = async (messageText: string): Promise<string> => {
+    try {
+      const model = this.modelService.getChatModel(0.3, null);
+      const systemPrompt = [
+        'Ты оптимизируешь запросы для модели генерации изображений Flux.',
+        'Извлеки суть запроса и переформулируй его в виде чёткого, детального промпта.',
+        'Отвечай ТОЛЬКО на английском языке — это обязательное требование модели Flux.',
+        'Возвращай ТОЛЬКО промпт, без пояснений и вводных фраз.',
+      ].join('\n');
+      const response = await model.invoke([new SystemMessage(systemPrompt), new HumanMessage(messageText)]);
+      const optimized = typeof response.content === 'string' ? response.content.trim() : '';
+      return optimized || messageText;
+    } catch (error) {
+      this.loggerService.error(this.TAG, 'optimizeImagePrompt error', error);
+      return messageText;
+    }
   };
 
   private loadHistory = async (userId: number): Promise<{ role: string; content: string; }[]> => {

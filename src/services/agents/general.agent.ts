@@ -8,6 +8,16 @@ import { RequestEntity } from '@/db/entities/request.entity';
 import { SearchHistoryEntity } from '@/db/entities/search-history.entity';
 import { UserEntity } from '@/db/entities/user.entity';
 
+export interface GeneralAgentImageBuffer {
+  buffer: Buffer;
+  mimeType: string;
+}
+
+export interface GeneralAgentResult {
+  text: string;
+  imageBuffers: GeneralAgentImageBuffer[];
+}
+
 export interface GeneralAgentInput {
   telegramId: string;
   userId: number;
@@ -28,7 +38,7 @@ export class GeneralAgentService extends BaseAgentService {
 
   private readonly modelService = Container.get(ModelService);
 
-  public process = async (input: GeneralAgentInput): Promise<string> => {
+  public process = async (input: GeneralAgentInput): Promise<GeneralAgentResult> => {
     const { telegramId, userId, requestId, messageText, fileText, imageUrl, mediaType, modelId } = input;
 
     // Загружаем последние 10 сообщений из истории
@@ -90,12 +100,12 @@ export class GeneralAgentService extends BaseAgentService {
     const model = this.modelService.getChatModel(0.7, modelId);
 
     let answer: string;
+    let imageBuffers: GeneralAgentImageBuffer[];
     try {
       const response = await model.invoke([systemMessage, ...historyMessages, userMessage]);
-      const raw = typeof response.content === 'string'
-        ? response.content.trim()
-        : JSON.stringify(response.content);
-      answer = this.convertMarkdownToHtml(raw);
+      const { text, imageBuffers: extracted } = this.extractResponseContent(response.content);
+      answer = this.convertMarkdownToHtml(text);
+      imageBuffers = extracted;
     } catch (error) {
       this.loggerService.error(this.TAG, 'LLM call failed:', error);
       throw error;
@@ -107,7 +117,32 @@ export class GeneralAgentService extends BaseAgentService {
     // Логируем в search_history
     await this.logSearch(requestId, userId, messageText);
 
-    return answer;
+    return { text: answer, imageBuffers };
+  };
+
+  private extractResponseContent = (content: string | unknown[]): GeneralAgentResult => {
+    if (typeof content === 'string') {
+      return { text: content.trim(), imageBuffers: [] };
+    }
+
+    const textParts: string[] = [];
+    const imageBuffers: GeneralAgentImageBuffer[] = [];
+
+    for (const block of content) {
+      const typedBlock = block as { type?: string; text?: string; image_url?: { url: string; }; };
+      if (typedBlock.type === 'text' && typedBlock.text) {
+        textParts.push(typedBlock.text);
+      } else if (typedBlock.type === 'image_url' && typedBlock.image_url?.url?.startsWith('data:')) {
+        const [header, base64Data] = typedBlock.image_url.url.split(',');
+        const mimeMatch = header.match(/data:([^;]+)/);
+        const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
+        if (base64Data) {
+          imageBuffers.push({ buffer: Buffer.from(base64Data, 'base64'), mimeType });
+        }
+      }
+    }
+
+    return { text: textParts.join('\n').trim(), imageBuffers };
   };
 
   private convertMarkdownToHtml = (text: string): string =>
