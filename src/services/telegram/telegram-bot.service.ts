@@ -1,4 +1,4 @@
-import { SocksProxyAgent } from 'socks-proxy-agent';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import { Telegraf, Input } from 'telegraf';
 import { Container, Singleton } from 'typescript-ioc';
 import type { ExtraReplyMessage, ExtraEditMessageText } from 'telegraf/typings/telegram-types';
@@ -14,8 +14,8 @@ export class TelegramBotService {
 
   private bot: Telegraf<Context> | null = null;
 
-  private readonly socksProxyAgent: SocksProxyAgent | null = process.env.TELEGRAM_PROXY_USER && process.env.TELEGRAM_PROXY_PASS && process.env.TELEGRAM_PROXY_HOST
-    ? new SocksProxyAgent(`socks5://${process.env.TELEGRAM_PROXY_USER}:${process.env.TELEGRAM_PROXY_PASS}@${process.env.TELEGRAM_PROXY_HOST}`)
+  private readonly proxyAgent: HttpsProxyAgent<any> | null = process.env.TELEGRAM_PROXY_USER && process.env.TELEGRAM_PROXY_PASS && process.env.TELEGRAM_PROXY_HOST
+    ? new HttpsProxyAgent(`http://${process.env.TELEGRAM_PROXY_USER}:${process.env.TELEGRAM_PROXY_PASS}@${process.env.TELEGRAM_PROXY_HOST}`)
     : null;
 
   private readonly PHOTO_SIZE_LIMIT_BYTES = 10 * 1024 * 1024; // 10 MB
@@ -23,14 +23,14 @@ export class TelegramBotService {
   // Теги, которые поддерживает Telegram HTML-парсер
   private readonly ALLOWED_TELEGRAM_TAGS = new Set(['b', 'i', 'u', 's', 'strike', 'del', 'code', 'pre', 'a', 'tg-spoiler', 'tg-emoji']);
 
-  public getSocksProxyAgent = (): SocksProxyAgent | null => this.socksProxyAgent;
+  public getProxyAgent = (): HttpsProxyAgent<any> | null => this.proxyAgent;
 
   public init = async () => {
     try {
-      this.bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN ?? '', this.socksProxyAgent
+      this.bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN ?? '', this.proxyAgent
         ? {
           telegram: {
-            agent: this.socksProxyAgent,
+            agent: this.proxyAgent,
           },
         }
         : {});
@@ -59,7 +59,7 @@ export class TelegramBotService {
 
   public sendMessage = async (text: string, telegramId: string, options?: ExtraReplyMessage) => {
     if (!text?.trim()) {
-      this.loggerService.warn(this.TAG, `sendMessage: пустой текст, пропускаем отправку`, { telegramId });
+      this.loggerService.warn(this.TAG, 'sendMessage: пустой текст, пропускаем отправку', { telegramId });
       return;
     }
     try {
@@ -88,7 +88,7 @@ export class TelegramBotService {
 
   public editMessage = async (text: string, telegramId: string, messageId: number, options?: ExtraEditMessageText) => {
     if (!text?.trim()) {
-      this.loggerService.warn(this.TAG, `editMessage: пустой текст, пропускаем редактирование`, { telegramId, messageId });
+      this.loggerService.warn(this.TAG, 'editMessage: пустой текст, пропускаем редактирование', { telegramId, messageId });
       return;
     }
     const sanitizedText = this.sanitizeTelegramHtml(text);
