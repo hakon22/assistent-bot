@@ -179,6 +179,16 @@ PostgreSQL, схема `assistent_bot`:
 - ≤ 10 MB → `sendPhoto` (превью в чате)
 - > 10 MB → `sendDocument` (файл)
 
+### Веб-поиск
+
+Если к `model_id` модели добавлен суффикс `:online` (например `google/gemini-3-flash-preview:online`), включается режим нативного веб-поиска RouterAI:
+
+1. **Маршрутизация** — запросы в интернет направляются в `general_agent`, а не в `browser_agent` (Playwright не используется).
+2. **Поиск** — RouterAI автоматически активирует плагин `web` для выбранной модели.
+3. **Источники** — ссылки из `url_citation` добавляются в ответ, если модель их не включила в текст.
+
+Чтобы включить режим, добавьте `:online` к `model_id` в таблице `model` или выберите такую модель через `/model`. Подробнее: [документация RouterAI](https://routerai.ru/docs/guides/overview/plugins/web-search).
+
 ## Команды бота
 
 | Команда | Описание |

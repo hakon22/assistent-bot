@@ -5,3 +5,4 @@ logs/
 *.log
 .tsbuildinfo
 screenshots/
+.vscode/

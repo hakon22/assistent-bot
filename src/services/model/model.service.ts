@@ -11,6 +11,8 @@ export class ModelService {
 
   private readonly temperature = 0.7;
 
+  public isWebSearchModel = (modelId?: string | null): boolean => Boolean(modelId?.endsWith(':online'));
+
   public getChatModel = (temperature: number | null | undefined, modelId?: string | null): ChatOpenAI => {
     return new ChatOpenAI({
       model: modelId ?? this.modelName,

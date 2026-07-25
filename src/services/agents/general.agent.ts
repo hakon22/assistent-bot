@@ -54,23 +54,10 @@ export class GeneralAgentService extends BaseAgentService {
         take: 10,
       });
 
+    const isWebSearchModel = this.modelService.isWebSearchModel(modelId);
+
     const systemMessage = new SystemMessage(
-      [
-        'Ты — умный и полезный ИИ-ассистент.',
-        this.buildAgentCurrentDatePromptBlock(),
-        'Отвечай на вопросы на русском языке. Будь точным, кратким и полезным.',
-        '',
-        'ФОРМАТИРОВАНИЕ — используй ТОЛЬКО Telegram HTML:',
-        '  <b>жирный</b>  <i>курсив</i>  <a href="URL">ссылка</a>  списки с •',
-        'ЗАПРЕЩЕНО: markdown ** **, [ ]( ), # заголовки, --- разделители.',
-        '',
-        'ССЫЛКИ: включай только реально существующие URL которые ты знаешь наверняка.',
-        'У тебя НЕТ доступа к интернету. Не имитируй веб-поиск.',
-        'Не генерируй ссылки с utm-параметрами и не придумывай URL к магазинам.',
-        '',
-        'Если прислали изображение — опиши что на нём изображено.',
-        'Если прислали голосовое или видео — содержимое уже распознано и передано текстом.',
-      ].join('\n'),
+      this.buildSystemPrompt(isWebSearchModel),
     );
 
     // Строим историю (oldest first)
@@ -117,7 +104,8 @@ export class GeneralAgentService extends BaseAgentService {
       });
       const { text, imageBuffers: extracted } = await this.extractResponseContent(response.content);
       this.loggerService.debug(this.TAG, 'Extracted from response', { text: text.substring(0, 200), imageBuffersCount: extracted.length });
-      answer = this.convertMarkdownToHtml(text);
+      const textWithCitations = this.appendCitationSources(text, response);
+      answer = this.convertMarkdownToHtml(textWithCitations);
       imageBuffers = extracted;
     } catch (error) {
       this.loggerService.error(this.TAG, 'LLM call failed:', error);
@@ -128,9 +116,82 @@ export class GeneralAgentService extends BaseAgentService {
     await this.saveHistory(telegramId, userId, requestId, messageText, answer);
 
     // Логируем в search_history
-    await this.logSearch(requestId, userId, messageText);
+    await this.logSearch(requestId, userId, messageText, isWebSearchModel);
 
     return { text: answer, imageBuffers };
+  };
+
+  private buildSystemPrompt = (isWebSearchModel: boolean): string => {
+    const linkInstructions = isWebSearchModel
+      ? [
+        'ВЕБ-ПОИСК: у тебя включён встроенный веб-поиск. Используй его для актуальных данных, цен, новостей и информации из интернета.',
+        'ССЫЛКИ: включай ссылки на источники в формате <a href="URL">название</a>. Используй только реальные URL из результатов поиска.',
+        'Не выдумывай URL и не добавляй utm-параметры.',
+      ]
+      : [
+        'ССЫЛКИ: включай только реально существующие URL которые ты знаешь наверняка.',
+        'У тебя НЕТ доступа к интернету. Не имитируй веб-поиск.',
+        'Не генерируй ссылки с utm-параметрами и не придумывай URL к магазинам.',
+      ];
+
+    return [
+      'Ты — умный и полезный ИИ-ассистент.',
+      this.buildAgentCurrentDatePromptBlock(),
+      'Отвечай на вопросы на русском языке. Будь точным, кратким и полезным.',
+      '',
+      'ФОРМАТИРОВАНИЕ — используй ТОЛЬКО Telegram HTML:',
+      '  <b>жирный</b>  <i>курсив</i>  <a href="URL">ссылка</a>  списки с •',
+      'ЗАПРЕЩЕНО: markdown ** **, [ ]( ), # заголовки, --- разделители.',
+      '',
+      ...linkInstructions,
+      '',
+      'Если прислали изображение — опиши что на нём изображено.',
+      'Если прислали голосовое или видео — содержимое уже распознано и передано текстом.',
+    ].join('\n');
+  };
+
+  private appendCitationSources = (text: string, response: { additional_kwargs?: Record<string, unknown>; response_metadata?: Record<string, unknown>; }): string => {
+    const citations = this.extractCitationSources(response);
+    if (!citations.length) {
+      return text;
+    }
+
+    const missingCitations = citations.filter(({ url }) => !text.includes(url));
+    if (!missingCitations.length) {
+      return text;
+    }
+
+    const sourcesBlock = missingCitations
+      .map(({ url, title }) => `• <a href="${url}">${title}</a>`)
+      .join('\n');
+
+    return `${text}\n\n<b>Источники:</b>\n${sourcesBlock}`;
+  };
+
+  private extractCitationSources = (response: { additional_kwargs?: Record<string, unknown>; response_metadata?: Record<string, unknown>; }): { url: string; title: string; }[] => {
+    const annotations = [
+      ...(Array.isArray(response.additional_kwargs?.annotations) ? response.additional_kwargs.annotations : []),
+      ...(Array.isArray(response.response_metadata?.annotations) ? response.response_metadata.annotations : []),
+    ] as { type?: string; url_citation?: { url?: string; title?: string; }; }[];
+
+    const seenUrls = new Set<string>();
+    const citations: { url: string; title: string; }[] = [];
+
+    for (const annotation of annotations) {
+      if (annotation.type !== 'url_citation') {
+        continue;
+      }
+
+      const { url, title } = annotation.url_citation ?? {};
+      if (!url || seenUrls.has(url)) {
+        continue;
+      }
+
+      seenUrls.add(url);
+      citations.push({ url, title: title ?? url });
+    }
+
+    return citations;
   };
 
   private extractResponseContent = async (content: string | unknown[]): Promise<GeneralAgentResult> => {
@@ -193,13 +254,13 @@ export class GeneralAgentService extends BaseAgentService {
       .replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>')
       .replace(/^-\s+/gm, '• ');
 
-  private logSearch = async (requestId: number, userId: number, query: string): Promise<void> => {
+  private logSearch = async (requestId: number, userId: number, query: string, isWebSearchModel: boolean): Promise<void> => {
     try {
       const searchRecord = new SearchHistoryEntity();
       searchRecord.request = { id: requestId } as RequestEntity;
       searchRecord.user = { id: userId } as UserEntity;
       searchRecord.queryText = query;
-      searchRecord.searchEngine = 'llm';
+      searchRecord.searchEngine = isWebSearchModel ? 'web_search' : 'llm';
       searchRecord.agentName = 'general_agent';
       await searchRecord.save();
     } catch { /* non-critical */ }

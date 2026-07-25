@@ -20,6 +20,12 @@ import { ModelEntity } from '@/db/entities/model.entity';
 
 type AgentName = 'job_search_agent' | 'tours_hotels_agent' | 'general_agent' | 'reminder_agent' | 'browser_agent' | 'product_comparison_agent';
 
+const WEB_SEARCH_EXCLUDED_AGENTS: AgentName[] = [
+  'browser_agent',
+  'tours_hotels_agent',
+  'product_comparison_agent',
+];
+
 const AGENTS_REGISTRY: { name: AgentName; description: string; }[] = [
   {
     name: 'job_search_agent',
@@ -121,7 +127,25 @@ export class ManagerAgentService extends BaseAgentService {
   private routerNode = async (state: AgentState): Promise<Partial<AgentState>> => {
     const model = this.modelService.getChatModel(0.1, state.modelId);
 
-    const agentsList = AGENTS_REGISTRY.map((agent) => `- ${agent.name}: ${agent.description}`).join('\n');
+    const isWebSearchModel = this.modelService.isWebSearchModel(state.modelId);
+    const availableAgents = isWebSearchModel
+      ? AGENTS_REGISTRY.filter((agent) => !WEB_SEARCH_EXCLUDED_AGENTS.includes(agent.name))
+      : AGENTS_REGISTRY;
+
+    if (isWebSearchModel) {
+      this.loggerService.info(this.TAG, 'Web search model: browser agents excluded from routing', {
+        modelId: state.modelId,
+      });
+    }
+
+    const agentsList = availableAgents
+      .map((agent) => {
+        if (isWebSearchModel && agent.name === 'general_agent') {
+          return `- ${agent.name}: ${agent.description} Также используй для любых запросов в интернет: поиск товаров, цен, новостей, туров, сравнение — у модели включён нативный веб-поиск.`;
+        }
+        return `- ${agent.name}: ${agent.description}`;
+      })
+      .join('\n');
 
     const historyText = state.history
       .slice(-6)
@@ -132,6 +156,9 @@ export class ManagerAgentService extends BaseAgentService {
       'Ты — маршрутизатор запросов для мультиагентной системы.',
       this.buildAgentCurrentDatePromptBlock(),
       'Проанализируй сообщение пользователя и выбери наиболее подходящего агента.',
+      ...(isWebSearchModel
+        ? ['', 'У пользователя включена модель с нативным веб-поиском. Для запросов в интернет используй general_agent.']
+        : []),
       '',
       'Доступные агенты:',
       agentsList,
@@ -160,7 +187,7 @@ export class ManagerAgentService extends BaseAgentService {
       const jsonMatch = content.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
-        const agentNames = AGENTS_REGISTRY.map((agent) => agent.name);
+        const agentNames = availableAgents.map((agent) => agent.name);
         if (agentNames.includes(parsed.agent_name)) {
           selectedAgent = parsed.agent_name as AgentName;
           routingReason = parsed.reason ?? '';
