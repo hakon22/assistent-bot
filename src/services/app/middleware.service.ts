@@ -11,10 +11,14 @@ export class MiddlewareService {
     this.checkIpService = new CheckIpService();
   }
 
-  private getClientIp = (req: Request) => {
-    const xForwardedFor = req.headers['x-forwarded-for'];
-    if (xForwardedFor && !Array.isArray(xForwardedFor)) {
-      return xForwardedFor.split(',')[0].trim();
+  /**
+   * Возвращает IP клиента за nginx (X-Real-IP) или TCP-источник
+   * @param req - Express request
+   */
+  private getClientIp = (req: Request): string | undefined => {
+    const xRealIp = req.headers['x-real-ip'];
+    if (typeof xRealIp === 'string' && xRealIp.trim()) {
+      return xRealIp.trim();
     }
     return req.socket.remoteAddress;
   };
