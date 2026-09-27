@@ -2,6 +2,7 @@ import { Singleton, Container } from 'typescript-ioc';
 import express from 'express';
 
 import { BaseRouter } from '@/routes/base.route';
+import { AliceRoute } from '@/routes/alice/alice.route';
 import { IntegrationRoute } from '@/routes/integration/integration.route';
 import { HealthRoute } from '@/routes/health/health.route';
 
@@ -9,12 +10,15 @@ import { HealthRoute } from '@/routes/health/health.route';
 export class RouterService extends BaseRouter {
   private readonly integrationRoute = Container.get(IntegrationRoute);
 
+  private readonly aliceRoute = Container.get(AliceRoute);
+
   private readonly healthRoute = Container.get(HealthRoute);
 
   private router = express.Router();
 
   private routesArray = [
     this.integrationRoute,
+    this.aliceRoute,
     this.healthRoute,
   ];
 

@@ -1,5 +1,8 @@
 import { Singleton } from 'typescript-ioc';
+import { AIMessage, HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { ChatOpenAI } from '@langchain/openai';
+
+import { ModelMessageRoleEnum } from '@/types/model-message-role';
 
 @Singleton
 export class ModelService {
@@ -26,21 +29,21 @@ export class ModelService {
 
   /** Вызов LLM с набором сообщений, возвращает текст ответа */
   public invoke = async (
-    messages: { role: 'system' | 'user' | 'assistant'; content: string; }[],
+    messages: { role: ModelMessageRoleEnum; content: string; }[],
     temperature?: number,
     modelId?: string | null,
   ): Promise<string> => {
     const model = this.getChatModel(temperature, modelId);
     const langchainMessages = messages.map((message) => {
-      if (message.role === 'system') {
-        return { _getType: () => 'system' as const, content: message.content };
+      if (message.role === ModelMessageRoleEnum.SYSTEM) {
+        return new SystemMessage(message.content);
       }
-      if (message.role === 'user') {
-        return { _getType: () => 'human' as const, content: message.content };
+      if (message.role === ModelMessageRoleEnum.USER) {
+        return new HumanMessage(message.content);
       }
-      return { _getType: () => 'ai' as const, content: message.content };
+      return new AIMessage(message.content);
     });
-    const res = await model.invoke(langchainMessages as any);
+    const res = await model.invoke(langchainMessages);
     return typeof res.content === 'string' ? res.content.trim() : JSON.stringify(res.content);
   };
 }
