@@ -1,10 +1,12 @@
 import { Container, Singleton } from 'typescript-ioc';
 import axios from 'axios';
 import PDFParser from 'pdf2json';
+import { isEmpty } from 'lodash-es';
 import { type Telegraf, type Context } from 'telegraf';
 
 import { TelegramBotService } from '@/services/telegram/telegram-bot.service';
 import { TelegramService } from '@/services/telegram/telegram.service';
+import { TelegramMediaGroupBufferService, type TelegramMediaGroupPhoto } from '@/services/telegram/telegram-media-group-buffer.service';
 import { UserEntity, UserRoleEnum, UserStatusEnum } from '@/db/entities/user.entity';
 import { TelegramDialogStateEntity, TelegramDialogStateEnum } from '@/db/entities/telegram-dialog-state.entity';
 import { ModelEntity } from '@/db/entities/model.entity';
@@ -38,6 +40,8 @@ export class TelegramBotCommandService extends BaseService {
   private readonly telegramBotService = Container.get(TelegramBotService);
 
   private readonly telegramService = Container.get(TelegramService);
+
+  private readonly telegramMediaGroupBufferService = Container.get(TelegramMediaGroupBufferService);
 
   private readonly managerAgentService = Container.get(ManagerAgentService);
 
@@ -287,25 +291,49 @@ export class TelegramBotCommandService extends BaseService {
         await this.updateLastSeen(user);
 
         const photos = ctx.message.photo;
-        if (!photos?.length) {
+        if (isEmpty(photos)) {
           return;
         }
 
         const photo = photos[photos.length - 1];
         const caption = ctx.message.caption ?? '';
-        const { downloadUrl } = await this.downloadTelegramFile(photo.file_id);
+        const mediaGroupPhoto: TelegramMediaGroupPhoto = {
+          messageId: ctx.message.message_id,
+          fileId: photo.file_id,
+          fileUniqueId: photo.file_unique_id,
+          caption,
+        };
+        const mediaGroupId = ctx.message.media_group_id;
 
-        await this.processFileMessage(
+        if (mediaGroupId) {
+          this.telegramMediaGroupBufferService.schedulePhoto(
+            `${user.telegramId}:${mediaGroupId}`,
+            mediaGroupPhoto,
+            async (collectedPhotos, mergedCaption) => {
+              try {
+                await this.flushPhotoAlbum(user, collectedPhotos, mergedCaption);
+              } catch (error) {
+                await this.handleError(error, {
+                  telegramId: user.telegramId,
+                  serviceName: this.TAG,
+                  nodeName: 'photo_album_handler',
+                });
+              }
+            },
+          );
+          return;
+        }
+
+        const { buffer, downloadUrl } = await this.downloadTelegramFile(photo.file_id);
+        await this.processPhotoMessageBatch(
           user,
-          caption || '[Пользователь прислал фото]',
-          '',
-          downloadUrl,
-          photo.file_id,
-          'photo',
-          'image/jpeg',
-          `photo_${photo.file_unique_id}.jpg`,
-          null,
-          downloadUrl, // imageUrl для multimodal
+          [{
+            ...mediaGroupPhoto,
+            downloadUrl,
+            imageDataUrl: this.buildImageDataUrl(buffer, 'image/jpeg'),
+          }],
+          caption,
+          false,
         );
       } catch (error) {
         await this.handleError(error, { telegramId, serviceName: this.TAG, nodeName: 'photo_handler' });
@@ -332,7 +360,7 @@ export class TelegramBotCommandService extends BaseService {
         const transcript = await this.transcribeAudio(buffer, 'oggopus');
         const text = `[Голосовое]: ${transcript}`;
 
-        await this.processFileMessage(user, text, '', downloadUrl, voice.file_id, 'voice', 'audio/ogg', 'voice.ogg', buffer.length, undefined, spinner);
+        await this.processFileMessage(user, text, '', downloadUrl, voice.file_id, 'voice', 'audio/ogg', 'voice.ogg', buffer.length, spinner);
       } catch (error) {
         await this.handleError(error, { telegramId, serviceName: this.TAG, nodeName: 'voice_handler' });
       }
@@ -358,7 +386,7 @@ export class TelegramBotCommandService extends BaseService {
         const transcript = await this.transcribeAudio(buffer, 'mp4');
         const text = `[Видеосообщение]: ${transcript}`;
 
-        await this.processFileMessage(user, text, '', downloadUrl, note.file_id, 'video_note', 'video/mp4', 'video_note.mp4', buffer.length, undefined, spinner);
+        await this.processFileMessage(user, text, '', downloadUrl, note.file_id, 'video_note', 'video/mp4', 'video_note.mp4', buffer.length, spinner);
       } catch (error) {
         await this.handleError(error, { telegramId, serviceName: this.TAG, nodeName: 'video_note_handler' });
       }
@@ -385,7 +413,7 @@ export class TelegramBotCommandService extends BaseService {
         const transcript = await this.transcribeAudio(buffer, 'mp4');
         const text = caption ? `${caption}\n[Видео]: ${transcript}` : `[Видео]: ${transcript}`;
 
-        await this.processFileMessage(user, text, '', downloadUrl, video.file_id, 'video', video.mime_type ?? 'video/mp4', video.file_name ?? 'video.mp4', buffer.length, undefined, spinner);
+        await this.processFileMessage(user, text, '', downloadUrl, video.file_id, 'video', video.mime_type ?? 'video/mp4', video.file_name ?? 'video.mp4', buffer.length, spinner);
       } catch (error) {
         await this.handleError(error, { telegramId, serviceName: this.TAG, nodeName: 'video_handler' });
       }
@@ -412,7 +440,7 @@ export class TelegramBotCommandService extends BaseService {
         const transcript = await this.transcribeAudio(buffer, 'mp4');
         const text = caption ? `${caption}\n[Аудио]: ${transcript}` : `[Аудио]: ${transcript}`;
 
-        await this.processFileMessage(user, text, '', downloadUrl, audio.file_id, 'audio', audio.mime_type ?? 'audio/mpeg', audio.file_name ?? 'audio.mp3', buffer.length, undefined, spinner);
+        await this.processFileMessage(user, text, '', downloadUrl, audio.file_id, 'audio', audio.mime_type ?? 'audio/mpeg', audio.file_name ?? 'audio.mp3', buffer.length, spinner);
       } catch (error) {
         await this.handleError(error, { telegramId, serviceName: this.TAG, nodeName: 'audio_handler' });
       }
@@ -584,6 +612,71 @@ export class TelegramBotCommandService extends BaseService {
 
   // ──────────────── CORE HANDLERS ────────────────
 
+  private flushPhotoAlbum = async (user: UserEntity, collectedPhotos: TelegramMediaGroupPhoto[], mergedCaption: string): Promise<void> => {
+    if (isEmpty(mergedCaption.trim())) {
+      this.loggerService.info(this.TAG, 'Альбом без подписи, запрос к модели не отправляю', {
+        telegramId: user.telegramId,
+        photoCount: collectedPhotos.length,
+      });
+      await this.telegramService.sendMessage('Добавь подпись к альбому с заданием.', user.telegramId);
+      return;
+    }
+
+    const preparedPhotos: (TelegramMediaGroupPhoto & { downloadUrl: string; imageDataUrl: string; })[] = [];
+    for (const collectedPhoto of collectedPhotos) {
+      const { buffer, downloadUrl } = await this.downloadTelegramFile(collectedPhoto.fileId);
+      preparedPhotos.push({
+        ...collectedPhoto,
+        downloadUrl,
+        imageDataUrl: this.buildImageDataUrl(buffer, 'image/jpeg'),
+      });
+    }
+
+    await this.processPhotoMessageBatch(user, preparedPhotos, mergedCaption, true);
+  };
+
+  private processPhotoMessageBatch = async (
+    user: UserEntity,
+    photos: (TelegramMediaGroupPhoto & { downloadUrl: string; imageDataUrl: string; })[],
+    caption: string,
+    isMediaGroup: boolean,
+  ): Promise<void> => {
+    const trimmedCaption = caption.trim();
+    const messageText = trimmedCaption || '[Пользователь прислал фото]';
+    const mediaType: MediaType = trimmedCaption ? 'mixed' : 'photo';
+
+    this.loggerService.info(this.TAG, 'Обрабатываю фотографии', {
+      telegramId: user.telegramId,
+      photoCount: photos.length,
+      mediaType,
+      isMediaGroup,
+    });
+
+    const request = await this.requestService.create({
+      userId: user.id,
+      telegramChatId: user.telegramId,
+      rawText: messageText,
+      mediaType,
+    });
+
+    for (const { fileId, fileUniqueId, downloadUrl } of photos) {
+      await this.requestService.saveFileAttachment({
+        userId: user.id,
+        telegramFileId: fileId,
+        fileType: 'photo',
+        mimeType: 'image/jpeg',
+        fileName: `photo_${fileUniqueId}.jpg`,
+        downloadUrl,
+      }, request.id);
+    }
+
+    this.runManager(user, messageText, {
+      requestId: request.id,
+      imageUrls: photos.map(({ imageDataUrl }) => imageDataUrl),
+      mediaType,
+    }).catch(() => undefined);
+  };
+
   private processTextMessage = async (user: UserEntity, text: string, mediaType: string): Promise<void> => {
     const request = await this.requestService.create({
       userId: user.id,
@@ -610,7 +703,6 @@ export class TelegramBotCommandService extends BaseService {
     mimeType: string,
     fileName: string,
     fileSize: number | null,
-    imageUrl?: string,
     spinner?: Awaited<ReturnType<TelegramBotCommandService['createSpinner']>>,
   ): Promise<void> => {
     const mediaType = (fileType ?? 'document') as MediaType;
@@ -638,7 +730,6 @@ export class TelegramBotCommandService extends BaseService {
     this.runManager(user, text, {
       requestId: request.id,
       fileText: fileText || undefined,
-      imageUrl,
       mediaType,
       spinner,
     }).catch(() => undefined);
@@ -728,7 +819,7 @@ export class TelegramBotCommandService extends BaseService {
     options: {
       requestId: number;
       fileText?: string;
-      imageUrl?: string;
+      imageUrls?: string[];
       mediaType?: string;
       spinner?: Awaited<ReturnType<TelegramBotCommandService['createSpinner']>>;
     },
@@ -757,7 +848,7 @@ export class TelegramBotCommandService extends BaseService {
           requestId: options.requestId,
           messageText,
           fileText: options.fileText,
-          imageUrl: options.imageUrl,
+          imageUrls: options.imageUrls,
           mediaType: options.mediaType,
           resumeText: user.resumeText ?? undefined,
           modelId: await this.resolveModelId(user),
@@ -853,6 +944,9 @@ export class TelegramBotCommandService extends BaseService {
       pdfParser.parseBuffer(buffer, 0);
     });
   };
+
+  private buildImageDataUrl = (buffer: Buffer, mimeType: string): string =>
+    `data:${mimeType};base64,${buffer.toString('base64')}`;
 
   private downloadTelegramFile = async (fileId: string): Promise<{ buffer: Buffer; downloadUrl: string }> => {
     const telegram = this.telegramBotService.getBot().telegram;

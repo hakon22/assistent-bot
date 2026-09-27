@@ -1,7 +1,10 @@
+/* eslint-disable no-underscore-dangle */
 import { Container, Singleton } from 'typescript-ioc';
 import { SystemMessage, HumanMessage, AIMessage } from '@langchain/core/messages';
+import { isEmpty, isNil } from 'lodash-es';
 
 import { BaseAgentService } from '@/services/agents/base-agent.service';
+import { buildOrderedImageMessageContent } from '@/services/agents/image-message-content';
 import { ModelService } from '@/services/model/model.service';
 import { ConversationHistoryEntity } from '@/db/entities/conversation-history.entity';
 import { RequestEntity } from '@/db/entities/request.entity';
@@ -24,8 +27,8 @@ export interface GeneralAgentInput {
   requestId: number;
   messageText: string;
   fileText?: string;
-  /** Telegram download URL for image (valid ~1h) */
-  imageUrl?: string;
+  /** Изображения как data URL, в порядке альбома */
+  imageUrls?: string[];
   mediaType?: string;
   modelId?: string | null;
   /** Skip loading conversation history (e.g. for image generation models that don't need context) */
@@ -43,7 +46,7 @@ export class GeneralAgentService extends BaseAgentService {
   private readonly modelService = Container.get(ModelService);
 
   public process = async (input: GeneralAgentInput): Promise<GeneralAgentResult> => {
-    const { telegramId, userId, requestId, messageText, fileText, imageUrl, mediaType, modelId } = input;
+    const { telegramId, userId, requestId, messageText, fileText, imageUrls, mediaType, modelId } = input;
 
     // Загружаем последние 10 сообщений из истории (если не запрещено)
     const history = input.skipHistory
@@ -57,7 +60,9 @@ export class GeneralAgentService extends BaseAgentService {
     const isWebSearchModel = this.modelService.isWebSearchModel(modelId);
 
     const systemMessage = new SystemMessage(
-      this.buildSystemPrompt(isWebSearchModel),
+      input.skipTemperature
+        ? this.buildImageGenerationSystemPrompt()
+        : this.buildSystemPrompt(isWebSearchModel),
     );
 
     // Строим историю (oldest first)
@@ -69,18 +74,16 @@ export class GeneralAgentService extends BaseAgentService {
 
     // Текущее сообщение пользователя — с поддержкой мультимодальности
     const isImage = mediaType === 'photo' || mediaType === 'mixed';
+    const attachedImageUrls = imageUrls ?? [];
     let userMessage: HumanMessage;
 
-    if (isImage && imageUrl) {
-      const textPart = messageText
-        ? `${messageText}${fileText ? `\n\n[Файл]:\n${fileText.substring(0, 3000)}` : ''}`
-        : '[Пользователь прислал изображение]';
-
+    if (isImage && !isEmpty(attachedImageUrls)) {
       userMessage = new HumanMessage({
-        content: [
-          { type: 'text', text: textPart },
-          { type: 'image_url', image_url: { url: imageUrl } },
-        ],
+        content: buildOrderedImageMessageContent({
+          messageText: messageText || '[Пользователь прислал изображение]',
+          imageUrls: attachedImageUrls,
+          fileText,
+        }),
       });
     } else {
       let text = messageText;
@@ -90,23 +93,37 @@ export class GeneralAgentService extends BaseAgentService {
       userMessage = new HumanMessage(text);
     }
 
-    const model = this.modelService.getChatModel(input.skipTemperature ? null : 0.7, modelId);
+    const model = this.modelService.getChatModel(
+      input.skipTemperature ? null : 0.7,
+      modelId,
+      {
+        includeRawResponse: Boolean(input.skipTemperature),
+        includeImageOutput: Boolean(input.skipTemperature),
+      },
+    );
 
     let answer: string;
     let imageBuffers: GeneralAgentImageBuffer[];
     try {
       const response = await model.invoke([systemMessage, ...historyMessages, userMessage]);
-      this.loggerService.debug(this.TAG, 'Raw LLM response content', {
-        contentType: typeof response.content,
-        content: typeof response.content === 'string'
-          ? response.content.substring(0, 500)
-          : JSON.stringify(response.content).substring(0, 1000),
-      });
+      if (input.skipTemperature) {
+        this.loggerService.debug(this.TAG, 'Сырой ответ модели генерации', {
+          content: this.shortenLongStrings(response.content),
+          rawResponse: this.shortenLongStrings(response.additional_kwargs?.__raw_response ?? null),
+        });
+      }
       const { text, imageBuffers: extracted } = await this.extractResponseContent(response.content);
-      this.loggerService.debug(this.TAG, 'Extracted from response', { text: text.substring(0, 200), imageBuffersCount: extracted.length });
-      const textWithCitations = this.appendCitationSources(text, response);
-      answer = this.convertMarkdownToHtml(textWithCitations);
-      imageBuffers = extracted;
+      const rawImageBuffers = input.skipTemperature
+        ? this.extractRawResponseImages(response.additional_kwargs)
+        : [];
+      imageBuffers = isEmpty(extracted) ? rawImageBuffers : extracted;
+      const rawContent = this.readRawResponseText(response.additional_kwargs);
+      const modelText = text.trim() || rawContent;
+      this.loggerService.debug(this.TAG, 'Extracted from response', { text: modelText.substring(0, 200), imageBuffersCount: imageBuffers.length });
+      const textWithCitations = this.appendCitationSources(modelText, response);
+      answer = input.skipTemperature && isEmpty(imageBuffers) && isEmpty(modelText.trim())
+        ? 'Модель не вернула изображение.'
+        : this.convertMarkdownToHtml(textWithCitations);
     } catch (error) {
       this.loggerService.error(this.TAG, 'LLM call failed:', error);
       throw error;
@@ -120,6 +137,12 @@ export class GeneralAgentService extends BaseAgentService {
 
     return { text: answer, imageBuffers };
   };
+
+  private buildImageGenerationSystemPrompt = (): string => [
+    'Сгенерируй изображение по запросу пользователя.',
+    'Если приложены фотографии, они подписаны «Фото 1», «Фото 2» и далее в порядке альбома.',
+    'Используй их как референсы и выполни инструкцию пользователя.',
+  ].join('\n');
 
   private buildSystemPrompt = (isWebSearchModel: boolean): string => {
     const linkInstructions = isWebSearchModel
@@ -145,7 +168,8 @@ export class GeneralAgentService extends BaseAgentService {
       '',
       ...linkInstructions,
       '',
-      'Если прислали изображение — опиши что на нём изображено.',
+      'Если прислали изображение и нет другой задачи — опиши что на нём изображено.',
+      'Если изображений несколько, они подписаны «Фото 1», «Фото 2» и далее в порядке альбома. Выполняй задание пользователя с учётом этих номеров.',
       'Если прислали голосовое или видео — содержимое уже распознано и передано текстом.',
     ].join('\n');
   };
@@ -194,9 +218,59 @@ export class GeneralAgentService extends BaseAgentService {
     return citations;
   };
 
-  private extractResponseContent = async (content: string | unknown[]): Promise<GeneralAgentResult> => {
-    if (typeof content === 'string') {
-      return { text: content.trim(), imageBuffers: [] };
+  private shortenLongStrings = (value: unknown): unknown => {
+    if (typeof value === 'string') {
+      if (value.startsWith('data:') || value.length > 2000) {
+        return `[строка длиной ${value.length}]`;
+      }
+      return value;
+    }
+    if (Array.isArray(value)) {
+      return value.map((item) => this.shortenLongStrings(item));
+    }
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(
+        Object.entries(value).map(([key, nestedValue]) => [key, this.shortenLongStrings(nestedValue)]),
+      );
+    }
+    return value;
+  };
+
+  private readRawResponseText = (additionalKwargs: Record<string, unknown> | undefined): string => {
+    const rawResponse = additionalKwargs?.__raw_response as {
+      choices?: { message?: { content?: unknown; }; }[];
+    } | undefined;
+    const content = rawResponse?.choices?.[0]?.message?.content;
+    return typeof content === 'string' ? content.trim() : '';
+  };
+
+  private extractRawResponseImages = (additionalKwargs: Record<string, unknown> | undefined): GeneralAgentImageBuffer[] => {
+    const rawResponse = additionalKwargs?.__raw_response as {
+      choices?: { message?: { images?: { image_url?: { url?: string; }; }[]; }; }[];
+    } | undefined;
+    const images = rawResponse?.choices?.[0]?.message?.images ?? [];
+    const imageBuffers: GeneralAgentImageBuffer[] = [];
+
+    for (const image of images) {
+      const url = image?.image_url?.url ?? '';
+      if (!url.startsWith('data:')) {
+        continue;
+      }
+      const [header, base64Data] = url.split(',');
+      const mimeMatch = header.match(/data:([^;]+)/);
+      const mimeType = mimeMatch?.[1] ?? 'image/png';
+      if (!base64Data) {
+        continue;
+      }
+      imageBuffers.push({ buffer: Buffer.from(base64Data, 'base64'), mimeType });
+    }
+
+    return imageBuffers;
+  };
+
+  private extractResponseContent = async (content: string | unknown[] | null | undefined): Promise<GeneralAgentResult> => {
+    if (isNil(content) || typeof content === 'string') {
+      return { text: typeof content === 'string' ? content.trim() : '', imageBuffers: [] };
     }
 
     const textParts: string[] = [];

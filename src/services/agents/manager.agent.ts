@@ -2,6 +2,7 @@ import { Container, Singleton } from 'typescript-ioc';
 import { StateGraph, END } from '@langchain/langgraph';
 import { Annotation } from '@langchain/langgraph';
 import { SystemMessage, HumanMessage } from '@langchain/core/messages';
+import { isEmpty } from 'lodash-es';
 
 import { BaseAgentService } from '@/services/agents/base-agent.service';
 import { ModelService } from '@/services/model/model.service';
@@ -59,7 +60,7 @@ const AgentStateAnnotation = Annotation.Root({
   requestId: Annotation<number>(),
   messageText: Annotation<string>(),
   fileText: Annotation<string | undefined>(),
-  imageUrl: Annotation<string | undefined>(),
+  imageUrls: Annotation<string[] | undefined>(),
   mediaType: Annotation<string | undefined>(),
   resumeText: Annotation<string | undefined>(),
   modelId: Annotation<string | null | undefined>(),
@@ -81,7 +82,7 @@ export interface ManagerInput {
   requestId: number;
   messageText: string;
   fileText?: string;
-  imageUrl?: string;
+  imageUrls?: string[];
   mediaType?: string;
   resumeText?: string;
   modelId?: string | null;
@@ -250,7 +251,7 @@ export class ManagerAgentService extends BaseAgentService {
         requestId: state.requestId,
         messageText: state.messageText,
         fileText: state.fileText,
-        imageUrl: state.imageUrl,
+        imageUrls: state.imageUrls,
         mediaType: state.mediaType,
         modelId: state.modelId,
       });
@@ -401,7 +402,7 @@ export class ManagerAgentService extends BaseAgentService {
       requestId: input.requestId,
       messageText: input.messageText,
       fileText: input.fileText,
-      imageUrl: input.imageUrl,
+      imageUrls: input.imageUrls,
       mediaType: input.mediaType,
       resumeText: input.resumeText,
       modelId: input.modelId,
@@ -471,16 +472,21 @@ export class ManagerAgentService extends BaseAgentService {
       await input.onAgentSelected('image_generation_agent').catch(() => undefined);
     }
 
-    const optimizedPrompt = await this.optimizeImagePrompt(cleanText);
-    this.loggerService.info(this.TAG, 'Оптимизированный промпт для генерации изображения', { optimizedPrompt, hasImage: !!input.imageUrl });
+    const imageUrls = input.imageUrls ?? [];
+    const translatedPrompt = await this.translateImagePrompt(cleanText);
+    // Провайдер генерации может проигнорировать дополнительные референсы. Это ограничение API.
+    this.loggerService.info(this.TAG, 'Дословный перевод запроса для генерации изображения', {
+      translatedPrompt,
+      imageCount: imageUrls.length,
+    });
 
     const { text, imageBuffers } = await this.generalAgentService.process({
       telegramId: input.telegramId,
       userId: input.userId,
       requestId: input.requestId,
-      messageText: optimizedPrompt,
-      imageUrl: input.imageUrl,
-      mediaType: input.imageUrl ? 'photo' : undefined,
+      messageText: translatedPrompt,
+      imageUrls,
+      mediaType: !isEmpty(imageUrls) ? (input.mediaType ?? 'photo') : undefined,
       modelId: input.modelId,
       skipHistory: true,
       skipTemperature: true,
@@ -510,24 +516,51 @@ export class ManagerAgentService extends BaseAgentService {
     }
   };
 
-  private optimizeImagePrompt = async (messageText: string): Promise<string> => {
+  private translateImagePrompt = async (messageText: string): Promise<string> => {
     try {
-      const model = this.modelService.getChatModel(0.3, null);
+      const model = this.modelService.getChatModel(0, null);
       const systemPrompt = [
-        'Ты оптимизируешь запросы для модели генерации изображений.',
-        'Извлеки суть запроса и переформулируй его в виде чёткого, лаконичного промпта.',
-        'Отвечай ТОЛЬКО на английском языке — это обязательное требование модели.',
-        'Возвращай ТОЛЬКО промпт, без пояснений и вводных фраз.',
-        'ЗАПРЕЩЕНО добавлять теги разрешения и качества (8k, 4k, HD, ultra-detailed, high-resolution, professional lighting, photorealistic, hyperrealistic и подобные), если пользователь явно их не запросил.',
-        'Промпт должен описывать только то, что просил пользователь — без лишних украшений.',
+        'Ты дословно переводишь запрос пользователя на английский язык.',
+        'Сохрани каждое слово, число, имя и указание на фотографию: первое, второе и далее.',
+        'Не добавляй детали, которых нет в тексте пользователя.',
+        'Не сокращай, не пересказывай и не улучшай формулировку.',
+        'Не добавляй теги качества и разрешения, если пользователь их не написал.',
+        'Верни только перевод, без пояснений.',
+        'Если текст уже на английском, верни его без изменений.',
       ].join('\n');
-      const response = await model.invoke([new SystemMessage(systemPrompt), new HumanMessage(messageText)]);
-      const optimized = typeof response.content === 'string' ? response.content.trim() : '';
-      return optimized || messageText;
+      const response = await model.invoke([
+        new SystemMessage(systemPrompt),
+        new HumanMessage(messageText),
+      ]);
+      const translatedPrompt = this.readModelText(response.content);
+      return translatedPrompt || messageText;
     } catch (error) {
-      this.loggerService.error(this.TAG, 'optimizeImagePrompt error', error);
+      this.loggerService.error(this.TAG, 'translateImagePrompt error', error);
       return messageText;
     }
+  };
+
+  private readModelText = (content: unknown): string => {
+    if (typeof content === 'string') {
+      return content.trim();
+    }
+
+    if (!Array.isArray(content)) {
+      return '';
+    }
+
+    return content
+      .map(block => {
+        if (typeof block === 'string') {
+          return block;
+        }
+        if (block && typeof block === 'object' && 'text' in block && typeof block.text === 'string') {
+          return block.text;
+        }
+        return '';
+      })
+      .join('\n')
+      .trim();
   };
 
   private loadHistory = async (userId: number): Promise<{ role: string; content: string; }[]> => {

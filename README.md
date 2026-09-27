@@ -210,7 +210,7 @@ PostgreSQL, схема `assistent_bot`:
 | Как сказать | Backend URL | Модель |
 |---|---|---|
 | «Алиса, спроси у дипсика …» | `POST /alice/deepseek` | `~deepseek/deepseek-v4-flash-latest` |
-| «Алиса, спроси у джемини …» | `POST /alice/gemini` | `~google/gemini-flash-latest` |
+| «Алиса, спроси у джемини …» | `POST /alice/gemini` | `google/gemini-3.1-flash-lite` |
 
 Пока сессия навыка открыта, следующие реплики идут в ту же модель. Обычный ответ не завершает сессию. Выход из навыка делает сама Алиса: пауза, ошибка или отказ в доступе.
 
