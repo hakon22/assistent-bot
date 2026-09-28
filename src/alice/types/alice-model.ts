@@ -5,6 +5,7 @@ export const ALICE_MODEL_IDS: Record<AliceSkillModelEnum, string> = {
   [AliceSkillModelEnum.DEEPSEEK]: '~deepseek/deepseek-v4-flash-latest',
   [AliceSkillModelEnum.GEMINI]: 'google/gemini-3.1-flash-lite',
   [AliceSkillModelEnum.GROK]: '~x-ai/grok-latest',
+  [AliceSkillModelEnum.GPT]: 'openai/gpt-6-luna',
 };
 
 export interface AliceModelMessage {

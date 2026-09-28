@@ -91,13 +91,14 @@ Only 2 Telegram user IDs are allowed (`TELEGRAM_CHAT_ID`, `TELEGRAM_CHAT_ID2`).
 Alice skills use a separate whitelist: `ALICE_ALLOWED_YANDEX_USER_IDS` (`session.user.user_id`).
 
 ## Yandex Alice
-Separate from the Telegram agent graph. Three private skills in [Yandex Dialogs](https://dialogs.yandex.ru/developer/), same Express server (port 3014):
+Separate from the Telegram agent graph. Four private skills in [Yandex Dialogs](https://dialogs.yandex.ru/developer/), same Express server (port 3014):
 
 | Activation | Backend URL | Model id |
 |------------|-------------|----------|
 | «спроси у дипсика» | `POST /alice/deepseek` | `~deepseek/deepseek-v4-flash-latest` |
 | «спроси у джемини» | `POST /alice/gemini` | `google/gemini-3.1-flash-lite` |
 | «спроси у грока» | `POST /alice/grok` | `~x-ai/grok-latest` |
+| «спроси у джипити» | `POST /alice/gpt` | `openai/gpt-6-luna` |
 
 The provider stays `LLM_BASE_URL` / `LLM_API_KEY`. Dialogs must answer within about 4.5 seconds. The skill waits 4 seconds for the model. If the model is slower, Alice says to say «продолжить»; the answer is finished in memory and returned on the next request in the same skill session. `end_session` stays `false` for normal answers, so follow-up phrases stay inside the skill until the session ends on the Yandex side or access is denied.
 

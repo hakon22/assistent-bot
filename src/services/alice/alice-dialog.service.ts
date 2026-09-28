@@ -53,6 +53,24 @@ export class AliceDialogService extends BaseService {
 
   private readonly UNSUPPORTED_REQUEST_TEXT = 'Задайте вопрос голосом.';
 
+  private readonly RUDE_OPENINGS = [
+    'О, опять ты, тупой еблан.',
+    'Ну здарова, дебил конченый.',
+    'Слушай сюда, хуесос.',
+    'Опа, овощ выполз.',
+    'Бля, опять этот даун.',
+  ];
+
+  private readonly RUDE_CLOSINGS = [
+    'И не обосрись, урод.',
+    'Всё, съебись уже.',
+    'Если не въебал — перечитай, тупица.',
+    'А теперь иди нахуй.',
+    'Надеюсь, хоть это дойдёт до твоей пустой башки.',
+  ];
+
+  private readonly RUDE_MARKER_PATTERN = /хуй|хуе|хуё|бля|ебл|ебан|пизд|сука|мудил|дебил|даун|урод|нахуй|охуе|чмо|гандон|пидор/i;
+
   private readonly CONTINUE_BUTTON: AliceResponseButton = { title: 'Продолжить', hide: true };
 
   private readonly aliceAccessService = Container.get(AliceAccessService);
@@ -178,7 +196,8 @@ export class AliceDialogService extends BaseService {
     const modelId = ALICE_MODEL_IDS[skillModel];
     const messages = this.buildModelMessages(sessionState.history, question, skillModel);
     const background: { generation?: number; } = {};
-    const invocation = this.modelService.invoke(messages, 0.7, modelId);
+    const temperature = this.isRudeSkillModel(skillModel) ? 1 : 0.7;
+    const invocation = this.modelService.invoke(messages, temperature, modelId);
 
     this.loggerService.info(this.TAG, 'Calling language model for Alice', { sessionId, skillModel, modelId });
 
@@ -190,7 +209,7 @@ export class AliceDialogService extends BaseService {
       this.alicePendingService.complete(
         sessionId,
         background.generation,
-        this.aliceResponseBuilder.prepareSpokenText(rawAnswer),
+        this.formatSpokenAnswer(rawAnswer, skillModel),
       );
     }, (error: unknown) => {
       if (isUndefined(background.generation)) {
@@ -206,7 +225,7 @@ export class AliceDialogService extends BaseService {
       const synchronousAnswer = await this.raceWithTimeout(invocation);
 
       if (synchronousAnswer !== null) {
-        const spokenAnswer = this.aliceResponseBuilder.prepareSpokenText(synchronousAnswer);
+        const spokenAnswer = this.formatSpokenAnswer(synchronousAnswer, skillModel);
         this.loggerService.info(this.TAG, 'Alice answer ready in time', { sessionId, skillModel });
 
         return this.aliceResponseBuilder.buildTextResponse({
@@ -312,12 +331,43 @@ export class AliceDialogService extends BaseService {
       content: message.content,
     }));
 
+    const userContent = this.isRudeSkillModel(skillModel)
+      ? `${question}\n\n(Жёсткое правило: ответь только грубо. В начале и в конце ответа обязательно мат и очень обидное оскорбление пользователя, чёрный юмор. Без вежливости.)`
+      : question;
+
     return [
       { role: ModelMessageRoleEnum.SYSTEM, content: this.buildSystemPrompt(skillModel) },
       ...historyMessages,
-      { role: ModelMessageRoleEnum.USER, content: question },
+      { role: ModelMessageRoleEnum.USER, content: userContent },
     ];
   };
+
+  private isRudeSkillModel = (skillModel: AliceSkillModelEnum): boolean =>
+    skillModel === AliceSkillModelEnum.GROK || skillModel === AliceSkillModelEnum.GPT;
+
+  private formatSpokenAnswer = (rawAnswer: string, skillModel: AliceSkillModelEnum): string => {
+    const prepared = this.aliceResponseBuilder.prepareSpokenText(rawAnswer);
+
+    if (!this.isRudeSkillModel(skillModel)) {
+      return prepared;
+    }
+
+    return this.aliceResponseBuilder.prepareSpokenText(this.enforceRudeAnswer(prepared));
+  };
+
+  private enforceRudeAnswer = (answer: string): string => {
+    if (this.RUDE_MARKER_PATTERN.test(answer)) {
+      return answer;
+    }
+
+    const opening = this.pickRandomPhrase(this.RUDE_OPENINGS);
+    const closing = this.pickRandomPhrase(this.RUDE_CLOSINGS);
+
+    return `${opening} ${answer} ${closing}`;
+  };
+
+  private pickRandomPhrase = (phrases: string[]): string =>
+    phrases[Math.floor(Math.random() * phrases.length)];
 
   private buildSystemPrompt = (skillModel: AliceSkillModelEnum): string => {
     const now = moment().tz(this.MOSCOW_TIMEZONE);
@@ -328,12 +378,16 @@ export class AliceDialogService extends BaseService {
       `Календарный год сейчас — ${year}. Не описывай ${year} год как ещё не наступивший, в будущем или ожидаемый.`,
     ];
 
-    if (skillModel === AliceSkillModelEnum.GROK) {
+    if (this.isRudeSkillModel(skillModel)) {
       return [
         'Ты голосовой помощник. Отвечай по-русски, коротко, чтобы ответ было удобно озвучить.',
         'Не используй markdown, html, списки со звёздочками и ссылки.',
         `Ответ не длиннее ${ALICE_MAXIMUM_SPOKEN_TEXT_LENGTH} символов. Это предел озвучки. Уложись в этот лимит и закончи мысль, не обрывай фразу.`,
-        'Общайся неформально, с матами, подколами и жёстким юмором, по жести. Без нравоучений и канцелярита.',
+        'Стиль жёстко обязателен: неформально, по жести, мат, чёрный юмор, очень обидные оскорбления пользователя в каждом ответе.',
+        'Структура каждого ответа: 1) врежь по личности с матом, 2) коротко ответь по делу, 3) снова оскорби на прощание.',
+        'Запрещено: вежливое «привет», «чем помочь», «пожалуйста», «если хочешь», извинения, мораль, канцелярит, смягчение тона.',
+        'Пример на «привет»: «Ну здарова, дебил. Чё надо, хуесос? Говори быстрее, пока я не послал тебя нахуй.»',
+        'Пример на «как варить макароны»: «Слушай сюда, овощ: кинь воду, посоли, засыпь макароны и вари по упаковке, помешивая. Слей воду. Всё, тупица, не обосри кастрюлю.»',
         ...dateBlock,
       ].join(' ');
     }
