@@ -18,5 +18,9 @@ export class AliceRoute extends BaseRouter {
       ALICE_WEBHOOK_PATH[AliceSkillModelEnum.GEMINI],
       this.aliceWebhookService.handle(AliceSkillModelEnum.GEMINI),
     );
+    router.post(
+      ALICE_WEBHOOK_PATH[AliceSkillModelEnum.GROK],
+      this.aliceWebhookService.handle(AliceSkillModelEnum.GROK),
+    );
   };
 }

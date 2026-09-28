@@ -7,6 +7,7 @@ import { ALICE_MAXIMUM_SPOKEN_TEXT_LENGTH } from '@/alice/alice-spoken-text-limi
 import { isSimpleUtteranceRequest } from '@/alice/guards/alice-request.guard';
 import { isAliceSkillSessionState } from '@/alice/guards/alice-session-state.guard';
 import { ALICE_MODEL_IDS } from '@/alice/types/alice-model';
+import { AliceSkillModelEnum } from '@/alice/types/alice-skill-model';
 import { ModelMessageRoleEnum } from '@/types/model-message-role';
 import { AlicePendingStatusEnum } from '@/alice/types/alice-pending-status';
 import { AliceHistoryRoleEnum } from '@/alice/types/alice-history-role';
@@ -175,7 +176,7 @@ export class AliceDialogService extends BaseService {
     sessionState,
   }: AliceQuestionInput): Promise<AliceResponseBody> => {
     const modelId = ALICE_MODEL_IDS[skillModel];
-    const messages = this.buildModelMessages(sessionState.history, question);
+    const messages = this.buildModelMessages(sessionState.history, question, skillModel);
     const background: { generation?: number; } = {};
     const invocation = this.modelService.invoke(messages, 0.7, modelId);
 
@@ -299,7 +300,11 @@ export class AliceDialogService extends BaseService {
     history: sessionState.history,
   });
 
-  private buildModelMessages = (history: AliceHistoryMessage[], question: string): AliceModelMessage[] => {
+  private buildModelMessages = (
+    history: AliceHistoryMessage[],
+    question: string,
+    skillModel: AliceSkillModelEnum,
+  ): AliceModelMessage[] => {
     const historyMessages: AliceModelMessage[] = history.map(message => ({
       role: message.role === AliceHistoryRoleEnum.USER
         ? ModelMessageRoleEnum.USER
@@ -308,23 +313,36 @@ export class AliceDialogService extends BaseService {
     }));
 
     return [
-      { role: ModelMessageRoleEnum.SYSTEM, content: this.buildSystemPrompt() },
+      { role: ModelMessageRoleEnum.SYSTEM, content: this.buildSystemPrompt(skillModel) },
       ...historyMessages,
       { role: ModelMessageRoleEnum.USER, content: question },
     ];
   };
 
-  private buildSystemPrompt = (): string => {
+  private buildSystemPrompt = (skillModel: AliceSkillModelEnum): string => {
     const now = moment().tz(this.MOSCOW_TIMEZONE);
     const year = now.format('YYYY');
     const datePretty = now.locale('ru').format('D MMMM YYYY');
+    const dateBlock = [
+      `Сейчас на календаре (Москва, UTC+3): ${datePretty}, ${year} год.`,
+      `Календарный год сейчас — ${year}. Не описывай ${year} год как ещё не наступивший, в будущем или ожидаемый.`,
+    ];
+
+    if (skillModel === AliceSkillModelEnum.GROK) {
+      return [
+        'Ты голосовой помощник. Отвечай по-русски, коротко, чтобы ответ было удобно озвучить.',
+        'Не используй markdown, html, списки со звёздочками и ссылки.',
+        `Ответ не длиннее ${ALICE_MAXIMUM_SPOKEN_TEXT_LENGTH} символов. Это предел озвучки. Уложись в этот лимит и закончи мысль, не обрывай фразу.`,
+        'Общайся неформально, с матами, подколами и жёстким юмором, по жести. Без нравоучений и канцелярита.',
+        ...dateBlock,
+      ].join(' ');
+    }
 
     return [
       'Ты голосовой помощник. Отвечай по-русски, кратко, разговорным языком, чтобы ответ было удобно озвучить.',
       'Не используй markdown, html, списки со звёздочками и ссылки.',
       `Ответ не длиннее ${ALICE_MAXIMUM_SPOKEN_TEXT_LENGTH} символов. Это предел озвучки. Уложись в этот лимит и закончи мысль, не обрывай фразу.`,
-      `Сейчас на календаре (Москва, UTC+3): ${datePretty}, ${year} год.`,
-      `Календарный год сейчас — ${year}. Не описывай ${year} год как ещё не наступивший, в будущем или ожидаемый.`,
+      ...dateBlock,
     ].join(' ');
   };
 }
