@@ -15,7 +15,7 @@ export class TelegramBotService {
   private bot: Telegraf<Context> | null = null;
 
   private readonly proxyAgent: HttpsProxyAgent<any> | null = process.env.TELEGRAM_PROXY_USER && process.env.TELEGRAM_PROXY_PASS && process.env.TELEGRAM_PROXY_HOST
-    ? new HttpsProxyAgent(`http://${process.env.TELEGRAM_PROXY_USER}:${process.env.TELEGRAM_PROXY_PASS}@${process.env.TELEGRAM_PROXY_HOST}`)
+    ? new HttpsProxyAgent(`https://${process.env.TELEGRAM_PROXY_USER}:${process.env.TELEGRAM_PROXY_PASS}@${process.env.TELEGRAM_PROXY_HOST}`)
     : null;
 
   private readonly PHOTO_SIZE_LIMIT_BYTES = 10 * 1024 * 1024; // 10 MB
